@@ -1,0 +1,29 @@
+# secrets — NEVER commit
+.env
+*.env
+!.env.example
+
+# python
+.venv/
+__pycache__/
+*.pyc
+*.pyo
+
+# node
+web/node_modules/
+node_modules/
+web/dist/
+
+# generated DBs / data caches / artifacts
+tmp_db/
+data/raw_issues.json
+data/all_raw_issues.json
+data/processed_issues.json
+data/jira_seed_backup.json
+data/jira_seed_result.json
+data/jira_import.csv
+
+# tooling / os
+.playwright-mcp/
+.DS_Store
+*.log
