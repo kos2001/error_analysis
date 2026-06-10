@@ -11,6 +11,7 @@ type Issue = {
 type Match = {
   key: string; score: number; summary: string; chip: string; category: string;
   root_cause: string; resolution: string; workaround: string; debug_approach: string;
+  embed_cos?: number; entity_overlap?: number; bm25_raw?: number;
 };
 type Proposal = { root_cause: string; resolution: string; workaround: string; based_on: string; confidence: number };
 type RecoResp = { query: any; matches: Match[]; proposal: Proposal | null; coverage: boolean; explanation?: string };
@@ -261,7 +262,9 @@ export default function FailureAnalysis() {
                               <span className="font-mono text-xs text-indigo-600 font-semibold">{m.key}</span>
                               <span className={`text-[10px] px-1.5 py-0.5 rounded ${CAT_COLOR[m.category] ?? "bg-slate-100"}`}>{m.category}</span>
                               <span className="text-[10px] px-1.5 py-0.5 rounded bg-slate-100 text-slate-500">{m.chip}</span>
-                              <span className="ml-auto text-[10px] text-slate-400">유사도 {m.score.toFixed(3)}</span>
+                              <span className="ml-auto text-[10px] text-slate-400">
+                                {m.embed_cos != null ? `유사도 ${Math.round(m.embed_cos * 100)}%` : `유사도 ${m.score.toFixed(3)}`}
+                              </span>
                             </div>
                             <div className="text-sm font-medium leading-snug">{m.summary}</div>
                             <details className="mt-2 text-xs text-slate-600">

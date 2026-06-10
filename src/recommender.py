@@ -70,6 +70,8 @@ class Recommender:
     method: str = "hybrid"
     rrf_k: int = 60
     boost: float = 0.15                  # 동일 칩/분류 가산
+    signals: bool = True                 # 강도 신호(embed_cos 등) 산출 — 게이트/표시용
+    gate_cos: float = 0.50               # coverage 게이트: 임베딩 코사인 임계
     _embedder: object = field(default=None, repr=False)
     _kb_emb: object = field(default=None, repr=False)
 
@@ -80,6 +82,12 @@ class Recommender:
         self._keys = [r["key"] for r in self.kb]
         if self.method in ("embed", "hybrid_embed"):
             self._init_embed()
+        elif self.signals:
+            # 게이트/신뢰도 표시에 코사인이 필요. fastembed 미설치 시 신호 없이 동작.
+            try:
+                self._init_embed()
+            except ImportError:
+                self.signals = False
 
     # ---------- 임베딩(선택) ----------
     def _init_embed(self):
@@ -92,11 +100,15 @@ class Recommender:
         self._kb_emb = np.array(embs)
         self._np = np
 
-    def _embed_rank(self, q: str) -> list[tuple[int, float]]:
+    def _cos_all(self, q: str):
+        """질의 vs KB 전체 코사인 유사도 배열 (강도 신호)."""
         qv = next(iter(self._embedder.embed([q])))
         qv = self._np.array(qv)
-        sims = self._kb_emb @ qv / (
+        return self._kb_emb @ qv / (
             self._np.linalg.norm(self._kb_emb, axis=1) * self._np.linalg.norm(qv) + 1e-9)
+
+    def _embed_rank(self, q: str) -> list[tuple[int, float]]:
+        sims = self._cos_all(q)
         order = self._np.argsort(-sims)
         return [(int(i), float(sims[i])) for i in order]
 
@@ -163,10 +175,17 @@ class Recommender:
 
     def recommend(self, query_rec: dict, k: int = 3, exclude_key: str | None = None) -> dict:
         ranked = self.rank(query_rec, exclude_key)[:k]
+        q_ents = query_entities(query_rec)
+        # 강도 신호 — RRF(순위 기반) 점수와 별개. 게이트/신뢰도 표시는 이것만 사용한다.
+        cos = bm25_raw = None
+        if self.signals and self._embedder is not None:
+            qtext = _query_text(query_rec)
+            cos = self._cos_all(qtext)
+            bm25_raw = self._bm25.get_scores(tokenize(qtext))
         matches = []
         for i, score in ranked:
             r = self.kb[i]
-            matches.append({
+            m = {
                 "key": r["key"], "score": round(score, 4),
                 "summary": r["summary"], "chip": r.get("chip", ""),
                 "category": r.get("category", ""),
@@ -174,22 +193,39 @@ class Recommender:
                 "resolution": r.get("resolution", ""),
                 "workaround": r.get("workaround", ""),
                 "debug_approach": r.get("debug_approach", ""),
-            })
-        # 제안: 상위 매치들의 다수결 클래스 → 그 클래스 대표의 해결책
+                "entity_overlap": len(q_ents & self._kb_ents[i]),
+            }
+            if cos is not None:
+                m["embed_cos"] = round(float(cos[i]), 3)
+                m["bm25_raw"] = round(float(bm25_raw[i]), 2)
+            matches.append(m)
+        # coverage 게이트: 무관 질의 차단.
+        # 측정(2026-06: claudedocs/similarity_search_plan.md): 무관 질의 max_cos<=0.474 &
+        # 엔티티 겹침 0, 정답 paraphrase는 cos>=0.529 — 코사인 0.50 또는 엔티티 1개로 통과.
+        coverage = bool(matches)
+        gate = None
+        if cos is not None and len(cos):
+            masked = cos.copy()
+            if exclude_key is not None and exclude_key in self._keys:
+                masked[self._keys.index(exclude_key)] = -1.0
+            max_cos = float(masked.max())
+            top_overlap = max((m["entity_overlap"] for m in matches), default=0)
+            coverage = bool(matches) and (max_cos >= self.gate_cos or top_overlap >= 1)
+            gate = {"max_cos": round(max_cos, 3), "top_entity_overlap": top_overlap,
+                    "cos_threshold": self.gate_cos, "passed": coverage}
+        # 제안: 상위 매치들의 다수결 클래스 → 그 클래스 대표의 해결책 (게이트 통과 시에만)
         proposal = None
-        confidence = 0.0
-        if matches:
+        if matches and coverage:
             from collections import Counter
             classes = Counter(template_key(m["summary"]) for m in matches)
             top_class, cnt = classes.most_common(1)[0]
             rep = next(m for m in matches if template_key(m["summary"]) == top_class)
-            confidence = cnt / len(matches)
             proposal = {
                 "root_cause": rep["root_cause"], "resolution": rep["resolution"],
                 "workaround": rep["workaround"], "based_on": rep["key"],
-                "confidence": round(confidence, 2),
+                "confidence": round(cnt / len(matches), 2),
             }
-        return {"matches": matches, "proposal": proposal}
+        return {"matches": matches, "proposal": proposal, "coverage": coverage, "gate": gate}
 
 
 if __name__ == "__main__":

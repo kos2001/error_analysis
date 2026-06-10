@@ -23,6 +23,9 @@
 
 ## 작업 목록 (우선순위순)
 
+> 진행: ✅ P0-1, P0-2, P3(UI 유사도 표기) 구현 완료 (2026-06-10).
+> 검증 — 무관 질의 4/4 차단, paraphrase 2/2 통과, 정상 108/108 통과, LOO P@1=1.0 유지.
+
 ### P0-1. 강도 기반 유사도 신호 도입 (선행 조건)
 - `Recommender.recommend()`가 RRF 융합 점수와 별도로 매치마다
   `signals: {bm25_norm, entity_overlap, embed_cos}` 를 반환하도록 확장.

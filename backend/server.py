@@ -256,9 +256,11 @@ def recommend(req: RecommendRequest):
                   "category": query_rec.get("category"), "status": query_rec.get("status")},
         "matches": result["matches"],
         "proposal": result["proposal"],
-        "coverage": bool(result["matches"]),
+        "coverage": result.get("coverage", bool(result["matches"])),
+        "gate": result.get("gate"),
     }
-    if req.explain and result["matches"]:
+    # 게이트 미통과 시 LLM 설명 생성 안 함 (무관 사례 기반 환각 방지)
+    if req.explain and result["matches"] and out["coverage"]:
         out["explanation"] = _llm_explain(query_rec, result["matches"])
     return out
 
