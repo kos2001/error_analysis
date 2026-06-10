@@ -29,8 +29,9 @@ from preprocess import tokenize, extract_entities  # noqa: E402  (단일 소스)
 # 같은 템플릿(=같은 근본원인 클래스) 식별: 요약에서 칩 prefix와 변형 suffix 제거.
 # 변형 suffix는 항상 " (고객사 / 호스트)" 형태(공백+슬래시 포함)이므로,
 # 본문에 포함된 "(ghosting)" 같은 괄호와 구분하여 그것만 제거한다.
+# 호스트명에 중첩 괄호가 올 수 있음 — 예: "(Vega / Android NFC stack (NCI 2.3))"
 _PREFIX = re.compile(r"^\s*\[[^\]]*\]\s*")
-_SUFFIX = re.compile(r"\s*\([^()]*\s/\s[^()]*\)\s*$")
+_SUFFIX = re.compile(r"\s*\((?:[^()]|\([^()]*\))*\s/\s(?:[^()]|\([^()]*\))*\)\s*$")
 
 
 def template_key(summary: str) -> str:
@@ -86,7 +87,9 @@ class Recommender:
     rrf_k: int = 60
     boost: float = 0.15                  # 동일 칩/분류 가산
     signals: bool = True                 # 강도 신호(embed_cos 등) 산출 — 게이트/표시용
-    gate_cos: float = 0.50               # coverage 게이트: 임베딩 코사인 임계
+    gate_cos: float = 0.48               # coverage 게이트: 임베딩 코사인 임계
+    # 0.48 근거: paraphrase 정답 중 0.485/0.496이 0.50 직하에서 차단(FN)되는 반면,
+    # 무관 질의 분포는 0.474 이하(예외 n06 0.503은 어느 임계든 통과). 측정 2026-06-11.
     doc_analysis: bool = True            # KB 문서에 분석 단계(디버깅 접근/근본 원인) 포함
     _embedder: object = field(default=None, repr=False)
     _kb_emb: object = field(default=None, repr=False)

@@ -56,7 +56,8 @@ bash scripts/dev.sh        # 백엔드(:8001) + 프론트(:5173)
   "유사 사례 없음" 처리(LLM 설명도 생성 안 함). 매치별 강도 신호
   (`embed_cos`/`entity_overlap`/`bm25_raw`)를 API로 노출.
 - 평가: `src/eval_recommender.py --paraphrase --doc-stages both` —
-  paraphrase 40문항 P@1 .875 / 게이트 통과 .95 / 무관 질의 차단 .95 (hybrid_embed 기준).
+  264건 코퍼스(LSI+NFC) 기준 LOO·unresolved P@1 1.0, paraphrase 49문항
+  P@1 .898 / P@3 .939 / 게이트 통과 .939 / 무관 질의 차단 .95 (hybrid_embed).
 
 ### LLM 설명 엔진 선택 (RVP_ENGINE)
 
@@ -80,8 +81,11 @@ src/
   agent.py, retrievers.py, lang_validator.py, ...  (평가/실험용 유틸)
 scripts/
   run_pipeline.py       ingest→preprocess→explorer 오케스트레이션
-  jira_seed.py          가짜 고장 이슈 Jira 시드 생성기
-  lsi_failure_data.py   칩 10라인 × 24 고장 시나리오 데이터
+  jira_seed.py          가짜 고장 이슈 Jira 시드 생성기 (--set lsi|nfc|nfc2)
+  lsi_failure_data.py   칩 11라인 × (LSI 24종 + NFC Forum 프로토콜 14종) 고장 시나리오
+                        NFC 배치: NCI 2.3/Digital 2.4/LLCP 1.4/SNEP/Type 2·3·4·5 Tag/
+                        TNEP/WLC 2.0/Smart Poster RTD/NFC Auth Protocol/Connection Handover
+                        (https://nfc-forum.org/build/specifications 참조)
 backend/server.py       FastAPI (/recommend, /issues/unresolved, /chat, ...)
 web/                    Vite + React + TS + Tailwind
 ```

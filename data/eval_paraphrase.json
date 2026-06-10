@@ -40,7 +40,16 @@
     {"id": "p19a", "template": "특정 조도에서 horizontal banding(가로 줄무늬) noise", "summary": "실내 LED 조명 아래에서 카메라 미리보기에 가로 줄무늬가 생깁니다", "symptom": "특정 밝기의 인공조명에서만 줄무늬가 보이고 야외에선 정상"},
     {"id": "p19b", "template": "특정 조도에서 horizontal banding(가로 줄무늬) noise", "summary": "형광등 아래에서 찍으면 사진에 가로줄이 갑니다", "symptom": "조명 깜빡임 주기와 맞물려 화면에 밝기 줄무늬 발생"},
     {"id": "p20a", "template": "폴더블 패널 접힘부 경계에서 색온도 불일치(color mura)", "summary": "접는 화면을 펼치면 접힌 자리 좌우 색감이 다르게 보입니다", "symptom": "힌지 경계를 기준으로 화면 색온도가 미세하게 어긋남"},
-    {"id": "p20b", "template": "폴더블 패널 접힘부 경계에서 색온도 불일치(color mura)", "summary": "폴더블 기기 화면 가운데를 경계로 양쪽 화이트 톤이 다릅니다", "symptom": "펼친 상태에서 좌우 패널 색감 차이가 보임"}
+    {"id": "p20b", "template": "폴더블 패널 접힘부 경계에서 색온도 불일치(color mura)", "summary": "폴더블 기기 화면 가운데를 경계로 양쪽 화이트 톤이 다릅니다", "symptom": "펼친 상태에서 좌우 패널 색감 차이가 보임"},
+    {"id": "p21a", "template": "NCI 데이터 흐름 정지 — CORE_CONN_CREDITS 미반환으로 HCI 전송 멈춤", "summary": "태그에 큰 데이터를 쓰다가 휴대폰을 떼면 NFC 전송이 다시는 진행되지 않습니다", "symptom": "리더가 흐름 제어 크레딧을 돌려받지 못해 호스트 전송이 무한 대기"},
+    {"id": "p22a", "template": "다중 태그 환경에서 Type A anticollision 실패로 태그 인식 불가", "summary": "교통카드 두 장을 겹쳐서 대면 둘 다 인식되지 않습니다", "symptom": "여러 태그가 동시에 응답할 때 하나를 골라내는 절차가 실패"},
+    {"id": "p23a", "template": "ISO-DEP WTX 처리 누락으로 보안 APDU 교환 timeout", "summary": "보안 칩 연산이 오래 걸리는 명령에서 카드가 기다려 달라고 요청해도 리더가 끊어버립니다", "symptom": "처리 지연 연장 요청 후 응답 대기 없이 시간 초과 처리"},
+    {"id": "p24a", "template": "Type 5 Tag(NFC-V) 원거리에서 read 실패 — load modulation 진폭 미달", "summary": "특정 종류의 태그를 조금만 떨어뜨려 대면 읽기가 자주 실패합니다", "symptom": "2센티 이상 거리에서 태그 응답 신호가 약해 복조가 안 됨"},
+    {"id": "p25a", "template": "LLCP 링크 유휴 시 SYMM 미송신으로 P2P 세션 조기 종료", "summary": "기기끼리 NFC로 직접 주고받는 중 잠깐 데이터가 없으면 연결이 1초 만에 끊깁니다", "symptom": "유휴 유지 신호가 제때 안 나가 상대가 링크를 해제"},
+    {"id": "p26a", "template": "WLC 무선충전 중 NDEF 통신 병행 시 charging phase 이탈", "summary": "NFC 무선충전 중에 태그 정보를 읽으면 충전이 뚝뚝 끊기고 느려집니다", "symptom": "통신과 충전 단계가 전환될 때마다 전력 협상이 다시 일어남"},
+    {"id": "p27a", "template": "저전력 폴링(LPCD) 오탐으로 대기 전류 3배 증가", "summary": "금속 케이스를 끼우면 주머니 속에서 NFC가 자꾸 깨어나 배터리가 빨리 닳습니다", "symptom": "카드가 없는데도 감지 오탐이 반복되어 대기 소모 전류 급증"},
+    {"id": "p28a", "template": "Type 2 Tag 동적 메모리 write 중 전원 이탈 시 CC 영역 손상", "summary": "태그에 쓰는 도중 떼어버리면 그 태그가 다시는 인식되지 않습니다", "symptom": "기록 중단 후 태그 헤더 정보가 깨져 어느 리더에서도 읽기 불가"},
+    {"id": "p29a", "template": "Smart Poster RTD 파싱 오류 — 다중 레코드 NDEF에서 URI 누락", "summary": "태그를 읽으면 제목만 보이고 링크가 안 열립니다", "symptom": "여러 레코드가 든 태그에서 주소 정보만 누락되어 표시"}
   ],
   "negatives": [
     {"id": "n01", "summary": "사무실 프린터에서 용지 걸림이 반복됩니다", "symptom": "인쇄 중 종이가 구겨져 멈춤"},

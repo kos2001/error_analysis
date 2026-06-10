@@ -32,15 +32,19 @@ PICKLE = DB_DIR / "lsi_graph.pkl"
 # ---------------------------------------------------------------------------
 KEY_PATTERNS = [
     r"\b[A-Z]{2,}[A-Z0-9]*-[A-Za-z0-9]+\b",                                   # 칩 코드
-    r"\b(?:GDC7|UF40|ISP3|MDM5|DDIT|PMC2|NPX2|DPHY|AMV9|SEC7)\.[0-9.]+\b",     # 펌웨어 버전
-    r"\b(?:GDC7|UF40|ISP3|MDM5|DDIT|PMC2|NPX2|DPHY|AMV9|SEC7)\b",              # 펌웨어 prefix
+    r"\b(?:GDC7|UF40|ISP3|MDM5|DDIT|PMC2|NPX2|DPHY|AMV9|SEC7|NFC3)\.[0-9.]+\b",  # 펌웨어 버전
+    r"\b(?:GDC7|UF40|ISP3|MDM5|DDIT|PMC2|NPX2|DPHY|AMV9|SEC7|NFC3)\b",           # 펌웨어 prefix
     r"\b(Firmware|Thermal|Signal Integrity|Timing|Hardware|Power|Security)\b",  # 고장 분류
     r"\b(throttle|throttling|GC|garbage collection|PHY|LTSSM|AER|TRIM|L2P|journal|"
     r"link startup|HS-G4|HS-G3|CDR|ADAPT|HPB|bkops|flicker|banding|anti-flicker|"
     r"HDR|deghosting|RRC|NSA|SA|handover|mmWave|beam|BFR|VRR|LTPO|Vcom|gamma|demura|"
     r"undershoot|transient|DVS|buck|SPMI|I2C|NACK|descriptor|DMA|tiling|quantization|"
     r"INT8|self-refresh|ZQ|DQS|training|VTC|CAN-FD|FIFO|ISR|lockstep|ASIL-D|metastability|"
-    r"NFC|eSE|APDU|attestation|secure boot|PCR|glitch|recalibration)\b",       # 기술 용어 글로서리
+    r"NFC|eSE|APDU|attestation|secure boot|PCR|glitch|recalibration|"
+    r"NCI|NDEF|LLCP|ISO-DEP|TNEP|SNEP|WLC|anticollision|SDD|NVB|WTX|FWT|SYMM|"
+    r"NFC-[ABFV]|load modulation|polling loop|RF field|RF discovery|"
+    r"Connection Handover|Type [1-5] Tag|T_WAIT|OOB|"
+    r"LPCD|SENSF_REQ|Smart Poster|Capability Container|DRBG|nonce|TLV|MIU)\b",  # 기술 용어 글로서리 (+NFC Forum)
     r"\bGen[1-5]\b",
 ]
 
