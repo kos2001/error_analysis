@@ -12,6 +12,7 @@
     HERMES_BIN             hermes 실행 파일 경로 (기본: PATH의 hermes)
     HERMES_MODEL           hermes -m 모델 오버라이드 (기본: hermes 기본 모델)
     HERMES_TIMEOUT         호출 타임아웃 초 (기본: 300)
+    HERMES_TOOLSETS        hermes 도구 활성화 (예: "web", "web,file"; 기본: "" = 비활성)
 """
 from __future__ import annotations
 
@@ -32,6 +33,9 @@ HERMES_BIN = os.path.expanduser(os.getenv("HERMES_BIN") or shutil.which("hermes"
     Path.home() / ".local" / "bin" / "hermes"))
 HERMES_MODEL = os.getenv("HERMES_MODEL", "")
 HERMES_TIMEOUT = int(os.getenv("HERMES_TIMEOUT", "300"))
+# hermes toolset 활성화 (예: "web", "web,file", "debugging"). 빈 값 = 도구 비활성화(순수 생성).
+# headless(-Q --cli)에서도 도구가 실행됨 — 서버 무인 동작이므로 terminal/file 부여는 신중히.
+HERMES_TOOLSETS = os.getenv("HERMES_TOOLSETS", "")
 
 # agent.py 의 instructions 와 동일한 페르소나/정책 (첫 턴 프롬프트에 주입)
 INSTRUCTIONS = (
@@ -66,7 +70,7 @@ def _invoke(prompt: str, resume: str | None = None) -> tuple[str, str]:
 
     답변은 stdout, ``session_id: <id>`` 라인은 stderr로 출력된다.
     """
-    cmd = [HERMES_BIN, "chat", "-q", prompt, "-Q", "--cli", "-t", ""]
+    cmd = [HERMES_BIN, "chat", "-q", prompt, "-Q", "--cli", "-t", HERMES_TOOLSETS]
     if HERMES_MODEL:
         cmd += ["-m", HERMES_MODEL]
     if resume:
