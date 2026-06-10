@@ -45,18 +45,26 @@ set -a && source .env && set +a            # Jira/OpenRouter 자격증명
 ```sh
 bash scripts/dev.sh        # 백엔드(:8001) + 프론트(:5173)
 ```
-- `고장 분석 추천` 탭: 미해결 이슈 → 유사 해결 사례 + 제안 root-cause/해결책 (+ LLM 종합)
-- `지원 챗봇` 탭: Agno + OpenRouter + graph RAG 고객 지원 에이전트(원형)
+- Jira 이슈 번호 입력(예: LSI-7) 또는 목록 선택 → 유사 해결 사례 + 제안 root-cause/해결책 + LLM 종합 분석
 
-### 채팅/설명 엔진 선택 (RVP_ENGINE)
+### 유사도 검색 (recommender)
 
-`/chat`, `/chat/stream`, `/recommend?explain` 의 LLM 엔진을 `.env`로 선택:
+- 랭킹: BM25 + 엔티티 그래프 (+ 다국어 임베딩) RRF 융합, 기본 `hybrid_embed`
+  (`RVP_RECO_METHOD`로 변경). KB 문서는 **이슈 제기(요약/증상) + 문제 분석(디버깅
+  접근/근본 원인)** 단계 내용으로 구성 — 해결 단계는 질의에 존재할 수 없어 제외.
+- coverage 게이트: 임베딩 코사인 ≥0.5 또는 기술 엔티티 겹침 ≥1 미달 시
+  "유사 사례 없음" 처리(LLM 설명도 생성 안 함). 매치별 강도 신호
+  (`embed_cos`/`entity_overlap`/`bm25_raw`)를 API로 노출.
+- 평가: `src/eval_recommender.py --paraphrase --doc-stages both` —
+  paraphrase 40문항 P@1 .875 / 게이트 통과 .95 / 무관 질의 차단 .95 (hybrid_embed 기준).
 
-- `RVP_ENGINE=agno` (기본): Agno + OpenRouter API
-- `RVP_ENGINE=hermes`: 로컬 [Hermes Agent CLI](https://github.com/NousResearch) 서브프로세스
-  (`hermes chat -q ... -Q --cli`). 세션은 hermes `--resume` 으로 유지되며 매핑은
-  `tmp_db/hermes_sessions.json` 에 저장. KB 검색은 GraphRetriever로 미리 수행해
-  프롬프트에 주입(RAG). `HERMES_MODEL`/`HERMES_BIN`/`HERMES_TIMEOUT` 으로 오버라이드.
+### LLM 설명 엔진 선택 (RVP_ENGINE)
+
+`/recommend?explain=true` 의 종합 설명 생성 엔진을 `.env`로 선택:
+
+- `RVP_ENGINE=agno` (기본): OpenRouter API 직접 호출
+- `RVP_ENGINE=hermes`: 로컬 Hermes Agent CLI 서브프로세스 (`hermes chat -q ... -Q --cli`).
+  `HERMES_MODEL`/`HERMES_BIN`/`HERMES_TIMEOUT`/`HERMES_TOOLSETS` 로 오버라이드.
 
 ## 구조
 
@@ -67,7 +75,9 @@ src/
   explorer.py           3) 탐색/검색/시각화
   recommender.py        해결책 추천기 (graph/bm25/hybrid/embed)
   eval_recommender.py   P@1/P@3/MRR 평가 하네스
-  agent.py, retrievers.py, sql_db.py, lang_validator.py, ...  (지원 챗봇 원형)
+  hermes_engine.py      Hermes Agent CLI 엔진 (LLM 설명 생성 대체 백엔드)
+  jira_commenter.py     Jira 댓글 조회/게시 (사람 검토 승인 후 사용)
+  agent.py, retrievers.py, lang_validator.py, ...  (평가/실험용 유틸)
 scripts/
   run_pipeline.py       ingest→preprocess→explorer 오케스트레이션
   jira_seed.py          가짜 고장 이슈 Jira 시드 생성기

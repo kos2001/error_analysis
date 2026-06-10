@@ -59,7 +59,9 @@ def _reco_state() -> dict:
         "by_key": {r["key"]: r for r in records},
         "resolved": resolved,
         "unresolved": unresolved,
-        "reco": Recommender(resolved, method="hybrid"),
+        # hybrid_embed + 단계 인지 문서(제기+분석): paraphrase 평가 P@1 .875/gate .95
+        # (A/B: tmp_db/eval_recommender.json, claudedocs/similarity_search_plan.md)
+        "reco": Recommender(resolved, method=os.getenv("RVP_RECO_METHOD", "hybrid_embed")),
     })
     return _RECO_STATE
 

@@ -49,19 +49,34 @@ def query_entities(rec: dict) -> set[str]:
     return {e for e in ents if len(e) >= 2}
 
 
-def _doc_text(rec: dict) -> str:
-    """KB 문서 표현 (검색 대상)."""
-    return " ".join([
+def _doc_text(rec: dict, analysis: bool = True) -> str:
+    """KB 문서 표현 (검색 대상).
+
+    이슈는 제기 → 분석 → 해결 단계로 진행된다. 유사 이슈 매칭은
+    "이슈 제기(요약/증상)"와 "문제 분석(디버깅 접근/근본 원인)" 내용으로 하고,
+    해결 단계(resolution/workaround)는 질의(미해결 이슈)에 존재할 수 없는
+    정보이므로 문서 표현에서 제외한다.
+    """
+    parts = [
         rec.get("summary", ""), rec.get("symptom", ""),
         " ".join(rec.get("labels", []) or []),
         rec.get("chip", ""), rec.get("category", ""),
-    ])
+    ]
+    if analysis:
+        parts += [rec.get("debug_approach", ""), rec.get("root_cause", "")]
+    return " ".join(p for p in parts if p)
 
 
 def _query_text(rec: dict) -> str:
-    """질의 표현 (관찰 가능한 부분만 — root_cause/resolution은 사용 안 함)."""
-    return " ".join([rec.get("summary", ""), rec.get("symptom", ""),
-                     rec.get("chip", ""), rec.get("category", "")])
+    """질의 표현 — 이슈 제기 + (진행 중 이슈에 있다면) 분석 단계 내용.
+
+    해결 필드(resolution/workaround)는 미해결 질의에 존재할 수 없으므로 사용 안 함.
+    """
+    return " ".join(p for p in [
+        rec.get("summary", ""), rec.get("symptom", ""),
+        rec.get("chip", ""), rec.get("category", ""),
+        rec.get("debug_approach", ""), rec.get("root_cause", ""),
+    ] if p)
 
 
 @dataclass
@@ -72,11 +87,12 @@ class Recommender:
     boost: float = 0.15                  # 동일 칩/분류 가산
     signals: bool = True                 # 강도 신호(embed_cos 등) 산출 — 게이트/표시용
     gate_cos: float = 0.50               # coverage 게이트: 임베딩 코사인 임계
+    doc_analysis: bool = True            # KB 문서에 분석 단계(디버깅 접근/근본 원인) 포함
     _embedder: object = field(default=None, repr=False)
     _kb_emb: object = field(default=None, repr=False)
 
     def __post_init__(self):
-        self._docs = [_doc_text(r) for r in self.kb]
+        self._docs = [_doc_text(r, analysis=self.doc_analysis) for r in self.kb]
         self._bm25 = BM25Okapi([tokenize(d) for d in self._docs])
         self._kb_ents = [query_entities(r) for r in self.kb]
         self._keys = [r["key"] for r in self.kb]
@@ -90,15 +106,28 @@ class Recommender:
                 self.signals = False
 
     # ---------- 임베딩(선택) ----------
+    _EMBED_MODEL = "sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2"
+
     def _init_embed(self):
         from fastembed import TextEmbedding
+        import hashlib
         import numpy as np
+        from pathlib import Path
         # 다국어 소형 모델 (한국어 포함)
-        self._embedder = TextEmbedding(
-            model_name="sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2")
-        embs = list(self._embedder.embed(self._docs))
-        self._kb_emb = np.array(embs)
+        self._embedder = TextEmbedding(model_name=self._EMBED_MODEL)
         self._np = np
+        # KB 임베딩 디스크 캐시 — 문서 내용+모델이 같으면 서버 재기동 시 재계산 생략
+        digest = hashlib.md5(("\n".join(self._docs) + self._EMBED_MODEL).encode()).hexdigest()[:12]
+        cache = Path(__file__).resolve().parent.parent / "tmp_db" / f"kb_emb_{digest}.npz"
+        if cache.exists():
+            self._kb_emb = np.load(cache)["emb"]
+            return
+        self._kb_emb = np.array(list(self._embedder.embed(self._docs)))
+        try:
+            cache.parent.mkdir(exist_ok=True)
+            np.savez_compressed(cache, emb=self._kb_emb)
+        except OSError:
+            pass  # 캐시 실패는 치명적이지 않음
 
     def _cos_all(self, q: str):
         """질의 vs KB 전체 코사인 유사도 배열 (강도 신호)."""
