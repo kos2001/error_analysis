@@ -220,11 +220,20 @@ def main() -> int:
     ap.add_argument("--count", type=int, default=50)
     ap.add_argument("--skip", type=int, default=0,
                     help="앞에서부터 N건은 건너뛰고 그 이후만 push (이미 생성된 이슈 중복 방지)")
+    ap.add_argument("--set", default="lsi", choices=["lsi", "nfc", "nfc2"],
+                    help="시드 배치: lsi(기본 24종) | nfc(NFC Forum 8종) | nfc2(NFC 2차 6종)")
     ap.add_argument("--dry-run", action="store_true", help="API 호출 없이 백업 파일만 생성")
     ap.add_argument("--no-transition", action="store_true", help="상태 전환(transition) 생략")
     args = ap.parse_args()
 
-    issues = generate_issues(target_count=args.count)
+    if args.set == "nfc":
+        from lsi_failure_data import generate_nfc_issues
+        issues = generate_nfc_issues(target_count=args.count)
+    elif args.set == "nfc2":
+        from lsi_failure_data import generate_nfc_v2_issues
+        issues = generate_nfc_v2_issues(target_count=args.count)
+    else:
+        issues = generate_issues(target_count=args.count)
     if args.skip:
         issues = issues[args.skip:]
         print(f"앞 {args.skip}건 건너뜀 → {len(issues)}건 push 대상")

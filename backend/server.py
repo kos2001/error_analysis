@@ -1,14 +1,15 @@
-"""FastAPI server exposing the RVP support agent.
+"""FastAPI server — LSI 고장 분석 추천 API.
 
 Endpoints:
-    POST /chat            -> non-streaming JSON answer
-    POST /chat/stream     -> Server-Sent Events stream
-    GET  /memories        -> list a user's stored memories
+    POST /recommend          -> 유사 해결 사례 + root-cause/해결책 제안 (+ LLM 종합)
+    GET  /issues/unresolved  -> 미해결 이슈 목록
+    GET  /reco/stats         -> KB 통계
     GET  /health
 """
 from __future__ import annotations
 
 import json
+import os
 import sys
 from pathlib import Path
 from typing import Optional
@@ -18,13 +19,17 @@ sys.path.insert(0, str(ROOT / "src"))
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 
-from agent import build_agent  # noqa: E402
-from lang_validator import validate, validate_and_fix  # noqa: E402
+from lang_validator import validate_and_fix  # noqa: E402
 from preprocess import parse_issue  # noqa: E402
 from recommender import Recommender, template_key  # noqa: E402
+
+# LLM 설명 생성 엔진 선택: agno(OpenRouter) | hermes(Hermes Agent CLI)
+ENGINE = os.getenv("RVP_ENGINE", "agno").lower()
+if ENGINE == "hermes":
+    from hermes_engine import HermesEngine  # noqa: E402
+    _HERMES = HermesEngine()
 
 app = FastAPI(title="LSI Failure Analysis API")
 
@@ -54,7 +59,9 @@ def _reco_state() -> dict:
         "by_key": {r["key"]: r for r in records},
         "resolved": resolved,
         "unresolved": unresolved,
-        "reco": Recommender(resolved, method="hybrid"),
+        # hybrid_embed + 단계 인지 문서(제기+분석): paraphrase 평가 P@1 .875/gate .95
+        # (A/B: tmp_db/eval_recommender.json, claudedocs/similarity_search_plan.md)
+        "reco": Recommender(resolved, method=os.getenv("RVP_RECO_METHOD", "hybrid_embed")),
     })
     return _RECO_STATE
 
@@ -66,59 +73,9 @@ app.add_middleware(
 )
 
 
-class ChatRequest(BaseModel):
-    message: str
-    user_id: str = "web-user"
-    session_id: str = "web-session"
-
-
 @app.get("/health")
 def health():
     return {"ok": True}
-
-
-@app.post("/chat")
-def chat(req: ChatRequest):
-    agent = build_agent(user_id=req.user_id, session_id=req.session_id)
-    resp = agent.run(req.message)
-    raw = resp.content if hasattr(resp, "content") else str(resp)
-    vr = validate_and_fix(raw)
-    return {
-        "answer": vr.rewritten if (not vr.ok and vr.rewritten) else raw,
-        "language_check": {"ok": vr.ok, "violations": vr.violations},
-        "user_id": req.user_id,
-        "session_id": req.session_id,
-    }
-
-
-@app.post("/chat/stream")
-def chat_stream(req: ChatRequest):
-    agent = build_agent(user_id=req.user_id, session_id=req.session_id)
-
-    def event_gen():
-        buf = []
-        for chunk in agent.run(req.message, stream=True):
-            text = getattr(chunk, "content", None)
-            if text:
-                buf.append(text)
-                yield f"data: {json.dumps({'delta': text})}\n\n"
-        # Post-stream language compliance check + fix
-        full = "".join(buf)
-        vr = validate_and_fix(full) if full else None
-        if vr and not vr.ok and vr.rewritten:
-            yield f"data: {json.dumps({'replace': vr.rewritten, 'violations': vr.violations})}\n\n"
-        elif vr:
-            yield f"data: {json.dumps({'language_ok': vr.ok, 'violations': vr.violations})}\n\n"
-        yield "data: [DONE]\n\n"
-
-    return StreamingResponse(event_gen(), media_type="text/event-stream")
-
-
-@app.get("/memories")
-def memories(user_id: str = "web-user"):
-    agent = build_agent(user_id=user_id, session_id="memories-readonly")
-    mems = agent.get_user_memories(user_id=user_id) if hasattr(agent, "get_user_memories") else []
-    return {"user_id": user_id, "memories": [getattr(m, "memory", str(m)) for m in (mems or [])]}
 
 
 # ---------------------------------------------------------------------------
@@ -170,11 +127,7 @@ def unresolved_issues():
 
 def _llm_explain(query_rec: dict, matches: list[dict]) -> str:
     """상위 매치들을 근거로 LLM이 종합 root-cause/해결책을 한국어로 작성."""
-    import os
     import requests
-    api_key = os.environ.get("OPENROUTER_API_KEY")
-    if not api_key:
-        return ""
     cases = "\n\n".join(
         f"[{m['key']}] {m['summary']}\n근본원인: {m['root_cause']}\n해결책: {m['resolution']}\n우회책: {m['workaround']}"
         for m in matches)
@@ -186,6 +139,16 @@ def _llm_explain(query_rec: dict, matches: list[dict]) -> str:
         f"## 미해결 이슈\n{query_rec.get('summary','')}\n증상: {query_rec.get('symptom','')}\n"
         f"칩: {query_rec.get('chip','')} / 분류: {query_rec.get('category','')}\n\n"
         f"## 과거 해결 사례\n{cases}\n")
+    if ENGINE == "hermes":
+        try:
+            raw = _HERMES.complete(prompt)
+            vr = validate_and_fix(raw)
+            return vr.rewritten if (not vr.ok and vr.rewritten) else raw
+        except Exception as e:
+            return f"(LLM 설명 생성 실패: {e})"
+    api_key = os.environ.get("OPENROUTER_API_KEY")
+    if not api_key:
+        return ""
     model = os.getenv("RVP_MODEL") or os.getenv("OPENROUTER_MODEL", "openai/gpt-4o-mini")
     base = os.getenv("OPENROUTER_BASE_URL", "https://openrouter.ai/api/v1")
     try:
@@ -215,16 +178,19 @@ def recommend(req: RecommendRequest):
             "chip": req.chip or "", "category": req.category or "",
             "labels": req.labels or [],
         }
-    result = st["reco"].recommend(query_rec, k=req.k)
+    # 해결 이슈 키로 질의해도 자기 자신은 매치에서 제외
+    result = st["reco"].recommend(query_rec, k=req.k, exclude_key=req.key)
     out = {
         "query": {"key": query_rec.get("key"), "summary": query_rec.get("summary"),
                   "symptom": query_rec.get("symptom"), "chip": query_rec.get("chip"),
                   "category": query_rec.get("category"), "status": query_rec.get("status")},
         "matches": result["matches"],
         "proposal": result["proposal"],
-        "coverage": bool(result["matches"]),
+        "coverage": result.get("coverage", bool(result["matches"])),
+        "gate": result.get("gate"),
     }
-    if req.explain and result["matches"]:
+    # 게이트 미통과 시 LLM 설명 생성 안 함 (무관 사례 기반 환각 방지)
+    if req.explain and result["matches"] and out["coverage"]:
         out["explanation"] = _llm_explain(query_rec, result["matches"])
     return out
 

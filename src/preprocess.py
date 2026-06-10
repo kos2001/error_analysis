@@ -32,15 +32,19 @@ PICKLE = DB_DIR / "lsi_graph.pkl"
 # ---------------------------------------------------------------------------
 KEY_PATTERNS = [
     r"\b[A-Z]{2,}[A-Z0-9]*-[A-Za-z0-9]+\b",                                   # 칩 코드
-    r"\b(?:GDC7|UF40|ISP3|MDM5|DDIT|PMC2|NPX2|DPHY|AMV9|SEC7)\.[0-9.]+\b",     # 펌웨어 버전
-    r"\b(?:GDC7|UF40|ISP3|MDM5|DDIT|PMC2|NPX2|DPHY|AMV9|SEC7)\b",              # 펌웨어 prefix
+    r"\b(?:GDC7|UF40|ISP3|MDM5|DDIT|PMC2|NPX2|DPHY|AMV9|SEC7|NFC3)\.[0-9.]+\b",  # 펌웨어 버전
+    r"\b(?:GDC7|UF40|ISP3|MDM5|DDIT|PMC2|NPX2|DPHY|AMV9|SEC7|NFC3)\b",           # 펌웨어 prefix
     r"\b(Firmware|Thermal|Signal Integrity|Timing|Hardware|Power|Security)\b",  # 고장 분류
     r"\b(throttle|throttling|GC|garbage collection|PHY|LTSSM|AER|TRIM|L2P|journal|"
     r"link startup|HS-G4|HS-G3|CDR|ADAPT|HPB|bkops|flicker|banding|anti-flicker|"
     r"HDR|deghosting|RRC|NSA|SA|handover|mmWave|beam|BFR|VRR|LTPO|Vcom|gamma|demura|"
     r"undershoot|transient|DVS|buck|SPMI|I2C|NACK|descriptor|DMA|tiling|quantization|"
     r"INT8|self-refresh|ZQ|DQS|training|VTC|CAN-FD|FIFO|ISR|lockstep|ASIL-D|metastability|"
-    r"NFC|eSE|APDU|attestation|secure boot|PCR|glitch|recalibration)\b",       # 기술 용어 글로서리
+    r"NFC|eSE|APDU|attestation|secure boot|PCR|glitch|recalibration|"
+    r"NCI|NDEF|LLCP|ISO-DEP|TNEP|SNEP|WLC|anticollision|SDD|NVB|WTX|FWT|SYMM|"
+    r"NFC-[ABFV]|load modulation|polling loop|RF field|RF discovery|"
+    r"Connection Handover|Type [1-5] Tag|T_WAIT|OOB|"
+    r"LPCD|SENSF_REQ|Smart Poster|Capability Container|DRBG|nonce|TLV|MIU)\b",  # 기술 용어 글로서리 (+NFC Forum)
     r"\bGen[1-5]\b",
 ]
 
@@ -78,10 +82,17 @@ def _comment_block(comment: str, label: str) -> str:
     return m.group(1).strip() if m else ""
 
 
+BOT_COMMENT_MARKER = "자동 근본원인 분석"  # RCA-bot 댓글 식별 (scripts/rca_comment.py)
+
+
 def parse_issue(raw: dict) -> dict:
-    """raw 이슈 → 정규화 레코드 (필드 + 엔티티 + 검색용 본문)."""
+    """raw 이슈 → 정규화 레코드 (필드 + 엔티티 + 검색용 본문).
+
+    RCA-bot이 단 자동 분석 댓글은 시니어 분석으로 오인되어 KB를 오염시키므로 제외한다.
+    """
     desc = raw.get("description", "")
-    comment = raw["comments"][0] if raw.get("comments") else ""
+    comments = [c for c in raw.get("comments", []) if BOT_COMMENT_MARKER not in c[:80]]
+    comment = comments[0] if comments else ""
     rec = {
         "key": raw["key"],
         "summary": raw.get("summary", ""),
@@ -100,13 +111,13 @@ def parse_issue(raw: dict) -> dict:
         "resolution": _comment_block(comment, "적용 해결책 (Resolution)"),
         "workaround": _comment_block(comment, "임시 우회책 (Workaround)"),
     }
-    # 검색 결과로 반환할 본문
+    # 검색 결과로 반환할 본문 (봇 댓글 제외)
     rec["context_text"] = (
         f"### {rec['key']} — {rec['summary']}\n\n{desc}\n\n"
-        + ("\n\n".join(raw["comments"]) if raw.get("comments") else "")
+        + "\n\n".join(comments)
     ).strip()
-    # 엔티티: 본문/요약/코멘트 정규식 + 라벨 + 컴포넌트
-    blob = "\n".join([rec["summary"], desc, *raw.get("comments", [])])
+    # 엔티티: 본문/요약/코멘트 정규식 + 라벨 + 컴포넌트 (봇 댓글 제외)
+    blob = "\n".join([rec["summary"], desc, *comments])
     ents = extract_entities(blob)
     ents.update(raw.get("labels", []))
     ents.update(raw.get("components", []))

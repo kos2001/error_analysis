@@ -99,6 +99,13 @@ CHIP_LINES: list[ChipLine] = [
         fw_prefix="SEC7",
         host_platforms=["NFC controller", "AP SPI host", "GlobalPlatform stack"],
     ),
+    ChipLine(
+        code="NFC-CTRL-N3",
+        family="NFC Controller",
+        desc_ko="NFC 컨트롤러 IC (NFC Forum NCI 2.3 준수)",
+        fw_prefix="NFC3",
+        host_platforms=["Android NFC stack (NCI 2.3)", "Linux neard host", "차량용 NFC 리더 모듈"],
+    ),
 ]
 
 # ---------------------------------------------------------------------------
@@ -500,21 +507,28 @@ _주니어 엔지니어 참고_: 이 케이스는 '{t.category}' 분류의 전�
 """
 
 
-def generate_issues(target_count: int = 50, seed: int = 20260608) -> list[Issue]:
-    """현실적인 칩/펌웨어 고장 이슈를 target_count 건 생성한다."""
+def generate_issues(target_count: int = 50, seed: int = 20260608,
+                    templates: list[FailureTemplate] | None = None,
+                    base: datetime | None = None) -> list[Issue]:
+    """현실적인 칩/펌웨어 고장 이슈를 target_count 건 생성한다.
+
+    기본 인자는 기존 LSI 시드(결정론)와 동일한 출력을 유지한다 — 이미 Jira에
+    push된 배치와의 중복 방지를 위해 새 배치는 templates/seed를 분리해서 쓸 것.
+    """
+    templates = templates or FAILURE_TEMPLATES
     rng = random.Random(seed)
     chip_by_family: dict[str, list[ChipLine]] = {}
     for c in CHIP_LINES:
         chip_by_family.setdefault(c.family, []).append(c)
 
-    base_date = datetime(2026, 1, 6)
+    base_date = base or datetime(2026, 1, 6)
     issues: list[Issue] = []
 
     # 템플릿을 순회하며 변형을 만들어 target_count 도달
     idx = 0
     while len(issues) < target_count:
-        t = FAILURE_TEMPLATES[idx % len(FAILURE_TEMPLATES)]
-        variant = idx // len(FAILURE_TEMPLATES)  # 같은 템플릿 재사용 시 변형 번호
+        t = templates[idx % len(templates)]
+        variant = idx // len(templates)  # 같은 템플릿 재사용 시 변형 번호
         idx += 1
 
         chip_line = rng.choice(chip_by_family[t.family])
@@ -574,6 +588,207 @@ def generate_issues(target_count: int = 50, seed: int = 20260608) -> list[Issue]
         ))
 
     return issues
+
+
+# ---------------------------------------------------------------------------
+# NFC 프로토콜 고장 템플릿 — NFC Forum 사양(https://nfc-forum.org/build/specifications) 기반
+#   NCI v2.3 / Digital Protocol v2.4 / Activity v2.3 / Analog v3.0 / LLCP v1.4 /
+#   Type 4 Tag v1.2 / Type 5 Tag v1.3 / TNEP v1.0 / WLC v2.0 / Connection Handover v1.5
+# ---------------------------------------------------------------------------
+
+NFC_FAILURE_TEMPLATES: list[FailureTemplate] = [
+    FailureTemplate(
+        family="NFC Controller",
+        summary="[{chip}] NCI 데이터 흐름 정지 — CORE_CONN_CREDITS 미반환으로 HCI 전송 멈춤",
+        symptom="대용량 NDEF 메시지 전송 중 NFCC가 credit(CORE_CONN_CREDITS_NTF)을 반환하지 않아 host의 데이터 패킷 전송이 영구 정지합니다. NCI v2.3 credit 기반 flow control 위반.",
+        repro=["8KB NDEF 메시지를 Type 4 Tag에 write", "전송 중 RF field 순간 끊김(태그 이탈) 유발", "NCI 트레이스에서 credit 카운트 모니터링"],
+        severity="Critical",
+        category="Firmware",
+        root_cause="RF 링크 단절 시 NFCC FW가 전송 중이던 패킷을 폐기하면서 해당 logical connection의 credit을 host에 반환하지 않음. NCI v2.3 §5.2의 'credit은 패킷 소비 시점에 반환' 규정을 단절 경로에서 누락. host 스택은 credit 0으로 무한 대기.",
+        resolution="RF deactivation(RF_DEACTIVATE_NTF) 처리 경로에서 미반환 credit을 일괄 반환하도록 FW 수정. CORE_RESET 없이 회복 가능하게 connection별 credit 회계 재검증 로직 추가.",
+        workaround="host에서 5초 무응답 시 CORE_RESET_CMD로 NFCC 재초기화.",
+        log_excerpt="nci: tx blocked, conn_id=1 credits=0\nnci: RF_DEACTIVATE_NTF type=DISCOVERY\nnci: credit_ntf missing after deactivate (leak=3)",
+    ),
+    FailureTemplate(
+        family="NFC Controller",
+        summary="[{chip}] 다중 태그 환경에서 Type A anticollision 실패로 태그 인식 불가",
+        symptom="NFC-A 태그 2장이 겹쳐 있으면 둘 다 인식하지 못합니다. 단일 태그는 정상. Digital Protocol v2.4의 SDD(Single Device Detection) 절차 문제로 보입니다.",
+        repro=["Type 2 Tag 2장을 안테나 위 1cm 내 겹침", "polling loop 동작(Activity v2.3 기본 시퀀스)", "SDD_REQ CL1 응답 충돌 확인"],
+        severity="Major",
+        category="Firmware",
+        root_cause="SDD 충돌 비트 위치 계산에서 anticollision frame의 비트 단위 정렬을 바이트 경계로 반올림하는 버그. Digital Protocol v2.4 §6.7.2의 bit-oriented anticollision을 byte 단위로만 구현하여 충돌 위치가 바이트 내부일 때 NVB 계산이 틀어짐.",
+        resolution="SDD 루틴을 비트 단위 collision position 추적으로 재구현. NFC Forum DTA(Device Test Application) anticollision 시나리오 전 항목 통과 확인.",
+        workaround="태그를 한 장씩 접촉하도록 안내. 리더 모드 retry 간격 단축으로 체감 개선.",
+        log_excerpt="digital: SDD_REQ CL1 collision at bit 13\ndigital: NVB=0x20 (expected 0x15)\nactivity: poll A fail, restart discovery",
+    ),
+    FailureTemplate(
+        family="NFC Controller",
+        summary="[{chip}] ISO-DEP WTX 처리 누락으로 보안 APDU 교환 timeout",
+        symptom="처리 시간이 긴 보안 애플릿(키 생성 등) APDU에서 카드가 S(WTX) 요청을 보내면 리더가 이를 무시하고 timeout 처리합니다. Type 4 Tag v1.2 / ISO-DEP 경로.",
+        repro=["RSA 키쌍 생성 APDU (처리 2~3초)", "ISO-DEP FWT 초과 시 S(WTX) 발생 확인", "WTXM=10 요청 후 timeout 관찰"],
+        severity="Critical",
+        category="Firmware",
+        root_cause="ISO-DEP 상태머신이 I-block 응답만 기다리는 상태에서 S(WTX) 수신 시 S(WTX) response를 보내지 않고 FWT 타이머를 그대로 유지. Digital Protocol v2.4 §16의 WTX 절차(요청된 WTXM만큼 FWT 연장 + 응답 송신) 미구현 경로 존재 — chaining 중에만 동작하고 단일 I-block 교환에서 누락.",
+        resolution="S(WTX) 처리를 ISO-DEP 상태머신의 모든 대기 상태로 확장, FWT_INT = FWT × WTXM 연장 적용. DTA ISO-DEP WTX 시나리오 회귀 추가.",
+        workaround="애플릿 측에서 장시간 연산을 분할(command chaining)하면 회피 가능.",
+        log_excerpt="isodep: rx S(WTX) wtxm=10\nisodep: state=WAIT_IBLOCK, frame ignored\nisodep: FWT expired (77ms), deactivating",
+    ),
+    FailureTemplate(
+        family="NFC Controller",
+        summary="[{chip}] Type 5 Tag(NFC-V) 원거리에서 read 실패 — load modulation 진폭 미달",
+        symptom="NFC-V(ISO 15693 기반) 태그를 2cm 이상에서 읽으면 실패율이 30%를 넘습니다. 경쟁사 리더는 같은 거리에서 정상. Analog v3.0 수신 감도 의심.",
+        repro=["Type 5 Tag v1.3 레퍼런스 태그", "거리 2~4cm 스윕", "수신 진폭/복조 마진 측정"],
+        severity="Major",
+        category="Signal Integrity",
+        root_cause="안테나 매칭 회로의 Q factor가 과도하게 높아 대역폭이 좁아짐 — 태그 부하변조 부반송파(423.75kHz)의 측대역이 감쇠되어 복조 마진 부족. Analog v3.0의 poller 수신 요구 레벨은 만족하나 마진이 1dB 미만으로 온도/개체 편차에 취약.",
+        resolution="매칭 회로 Q를 낮추고(직렬 저항 조정) 수신 경로 AGC 임계 재튜닝. Analog v3.0 listener load modulation 최소 레벨 대비 수신 마진 6dB 확보를 출하 기준에 추가.",
+        workaround="태그 밀착(1cm 이내) 사용 안내.",
+        log_excerpt="analog: subcarrier amp 4.2mV (min margin <1dB)\nrf: t5t read retry 3/3 fail @3cm\nrf: CRC error burst on 423kHz sideband",
+    ),
+    FailureTemplate(
+        family="NFC Controller",
+        summary="[{chip}] LLCP 링크 유휴 시 SYMM 미송신으로 P2P 세션 조기 종료",
+        symptom="P2P(LLCP v1.4) 연결 후 데이터가 잠시 없으면 1초 내 링크가 끊어집니다. SNEP로 큰 파일 수신 대기 중 발생.",
+        repro=["LLCP 링크 수립(Connection Handover 협상 직후)", "1초 이상 무데이터 유지", "LTO(Link Timeout) 만료 관찰"],
+        severity="Major",
+        category="Firmware",
+        root_cause="LLCP v1.4 §5.2 symmetry 절차 위반 — initiator FW가 보낼 PDU가 없을 때 SYMM PDU를 송신해야 하나, 송신 큐가 비면 타이머 스레드가 sleep으로 들어가 SYMM 주기(LTO의 1/2)를 놓침. target은 LTO 만료로 링크 해제.",
+        resolution="SYMM 송신을 HW 타이머 기반으로 이전해 큐 상태와 무관하게 보장. LTO 협상값 검증 로직 추가.",
+        workaround="LTO를 협상 가능한 최대(2.5s)로 설정하면 빈도 감소.",
+        log_excerpt="llcp: tx queue empty, timer suspended\nllcp: peer LTO expired (500ms), DISC received\nsnep: GET fragmented transfer aborted at 34%",
+    ),
+    FailureTemplate(
+        family="NFC Controller",
+        summary="[{chip}] TNEP single response mode에서 NDEF write 후 상태 불일치",
+        symptom="TNEP v1.0으로 IoT 기기 설정을 쓰면 간헐적으로 기기에 반영되지 않습니다. status message는 success인데 실제 서비스 데이터가 이전 값.",
+        repro=["TNEP service select → NDEF write → status read", "T_WAIT 최소값 근처에서 반복", "Type 4 Tag 위 TNEP 서비스"],
+        severity="Major",
+        category="Firmware",
+        root_cause="TNEP v1.0 §4.3의 T_WAIT 대기 후 status 확인 절차에서, 태그 측 FW가 NDEF 갱신 완료 전에 TNEP status를 success로 선반영. write 직후 RF 단절 시 flash commit이 유실되어도 status는 이미 success로 읽힘 — status 기록과 데이터 commit 간 ordering 부재.",
+        resolution="서비스 데이터 flash commit 완료 후에만 TNEP status를 갱신하도록 순서 강제. commit 미완료 시 PROTOCOL_ERROR 반환.",
+        workaround="write 후 read-back 검증을 클라이언트에 추가.",
+        log_excerpt="tnep: svc=0x1A write 96B, status=SUCCESS\nflash: commit deferred (busy)\ntnep: read-back mismatch (old payload)",
+    ),
+    FailureTemplate(
+        family="NFC Controller",
+        summary="[{chip}] WLC 무선충전 중 NDEF 통신 병행 시 charging phase 이탈",
+        symptom="WLC v2.0 무선충전 세션 중 listener가 NDEF 읽기를 시도하면 충전이 끊기고 재협상이 반복됩니다. 충전 효율이 60% 이하로 저하.",
+        repro=["WLC poller 모드 충전 개시", "충전 중 WLC listener 정보(WLCCAP) 재읽기", "charging phase ↔ communication phase 전환 트레이스"],
+        severity="Major",
+        category="Power",
+        root_cause="WLC v2.0의 charging phase와 communication phase 전환 시퀀스에서, poller FW가 field strength class 재협상 없이 통신용 저전계로 전환 후 복귀 시 이전 협상값을 잃고 기본 class로 떨어짐. 매 통신마다 capability 재협상이 발생하며 충전 듀티가 급감.",
+        resolution="협상된 WLC field class를 세션 컨텍스트에 보존하고 phase 복귀 시 재사용. 재협상은 listener 요청 시에만 수행.",
+        workaround="충전 중 태그 정보 폴링 주기를 30초 이상으로 설정.",
+        log_excerpt="wlc: phase=COMM, field class drop 4->1\nwlc: renegotiate WLCCAP (count=27 in 60s)\nwlc: charge duty 41%",
+    ),
+    FailureTemplate(
+        family="NFC Controller",
+        summary="[{chip}] Connection Handover로 BT 페어링 시 OOB 데이터 불완전 전달",
+        symptom="NFC 태그 터치로 블루투스 스피커 페어링(Connection Handover v1.5 + Bluetooth SSP v1.3) 시 일부 단말에서 페어링 창만 뜨고 연결이 실패합니다.",
+        repro=["Handover Select 메시지에 BT carrier config 포함", "구형 host 스택(NDEF 단일 record 제한)과 조합", "OOB 데이터 길이 >255B 케이스"],
+        severity="Minor",
+        category="Firmware",
+        root_cause="Handover Select Record의 alternative carrier에 첨부되는 Bluetooth OOB 데이터가 255B를 넘을 때 FW의 NDEF 조립기가 short record로 강제 인코딩하여 payload가 절단됨. NDEF 사양의 SR 플래그 판단을 carrier data 길이가 아닌 고정값으로 처리.",
+        resolution="NDEF record 조립기에서 payload 길이 기반으로 SR 플래그를 동적 결정. Connection Handover v1.5 + BT SSP v1.3 조합 상호운용 시험 매트릭스 추가.",
+        workaround="OOB에서 옵션 필드(LE role 등)를 제거해 255B 이하로 축소.",
+        log_excerpt="ndef: record SR=1 but payload_len=312\nhandover: AC[0] carrier data truncated\nbt: OOB pairing failed (auth value mismatch)",
+    ),
+]
+
+
+def generate_nfc_issues(target_count: int = 40, seed: int = 20260611) -> list[Issue]:
+    """NFC 프로토콜 고장 배치 — 기존 LSI 배치(seed 20260608)와 분리된 결정론 시드."""
+    return generate_issues(target_count=target_count, seed=seed,
+                           templates=NFC_FAILURE_TEMPLATES, base=datetime(2026, 4, 1))
+
+
+# ---------------------------------------------------------------------------
+# NFC 프로토콜 고장 템플릿 2차 — 1차 배치(seed 20260611)가 이미 Jira에 push되어
+# 결정론이 깨지지 않도록 별도 리스트/시드로 관리한다.
+#   SNEP / Type 2 Tag v1.3 / Type 3 Tag v1.1(NFC-F) / Smart Poster RTD /
+#   Activity v2.3 저전력 폴링 / NFC Authentication Protocol v1.0
+# ---------------------------------------------------------------------------
+
+NFC_FAILURE_TEMPLATES_V2: list[FailureTemplate] = [
+    FailureTemplate(
+        family="NFC Controller",
+        summary="[{chip}] SNEP 대용량 PUT에서 fragment 재조립 실패로 전송 중단",
+        symptom="SNEP(LLCP 상위)으로 1MB 이상 NDEF 메시지를 PUT하면 약 10% 확률로 수신측 재조립이 실패하고 REJECT가 반환됩니다.",
+        repro=["SNEP PUT 1.5MB NDEF (사진 vCard)", "LLCP MIU 248B 협상 환경", "fragment 4000개 이상 케이스"],
+        severity="Major",
+        category="Firmware",
+        root_cause="SNEP fragment 수신 버퍼를 고정 크기 ring으로 운용하는데, LLCP RR(수신 준비) 통지가 버퍼 회수보다 먼저 나가 producer가 ring을 덮어씀. SNEP의 'Continue 응답 후 나머지 fragment 연속 수신' 절차에서 흐름 제어가 LLCP credit과 이중으로 꼬임.",
+        resolution="SNEP 수신 경로의 RR 통지를 버퍼 회수 완료 이후로 이동하고, ring full 시 LLCP busy(RNR) 전환. 1MB/8MB 장시간 PUT 회귀 추가.",
+        workaround="송신측에서 MIU를 128B로 낮추면 재현율이 1% 미만으로 감소.",
+        log_excerpt="snep: PUT len=1572864, continue sent\nllcp: RR issued while ring 98% full\nsnep: reassembly CRC mismatch at frag 3811, REJECT",
+    ),
+    FailureTemplate(
+        family="NFC Controller",
+        summary="[{chip}] Type 2 Tag 동적 메모리 write 중 전원 이탈 시 CC 영역 손상",
+        symptom="Type 2 Tag v1.3 write 도중 태그가 안테나에서 이탈하면 드물게 태그의 CC(Capability Container)가 손상되어 이후 어떤 리더에서도 NDEF 태그로 인식되지 않습니다.",
+        repro=["Type 2 Tag 144B 동적 영역 write", "write 중 태그 제거 반복 50회", "CC 블록(블록 3) 덤프 비교"],
+        severity="Critical",
+        category="Firmware",
+        root_cause="write 시퀀스가 CC 블록을 마지막에 갱신하지 않고 NDEF TLV 길이 갱신과 같은 트랜잭션에서 선기록. RF 이탈 시 CC의 magic number 바이트만 기록되고 길이 필드가 미기록되어 비정합 상태로 잔류 — Type 2 Tag v1.3 §4.6 write 절차의 권고 순서 위반.",
+        resolution="CC/길이 필드 갱신을 NDEF 데이터 기록 완료 후 단일 블록 write로 원자화. 손상 태그 복구용 진단 커맨드 추가.",
+        workaround="write 완료 콜백 전 태그 유지 안내 UI 적용.",
+        log_excerpt="t2t: write blk 4..39 ok\nrf: field off during blk 3 (CC) update\nt2t: CC magic=0xE1 len=0x00 (corrupt)",
+    ),
+    FailureTemplate(
+        family="NFC Controller",
+        summary="[{chip}] NFC-F(Type 3 Tag) 폴링 응답 타이밍 위반으로 교통카드 단말 호환 실패",
+        symptom="일본향 교통 단말(JIS X 6319-4 계열)에서 SENSF_REQ 폴링에 대한 응답이 간헐적으로 누락되어 개찰 실패가 보고됩니다. Type 3 Tag v1.1 / NFC-F 경로.",
+        repro=["SENSF_REQ TSN=0 폴링", "다른 RF 활동 직후 100ms 내 폴링 진입", "응답 슬롯 타이밍 측정"],
+        severity="Critical",
+        category="Timing",
+        root_cause="NFC-F listen 모드 진입 시 RF 파라미터 재설정(아날로그 캘리브레이션)이 SENSF_REQ 첫 슬롯 타이밍(512/fc 이내 응답)과 겹침. Digital Protocol v2.4의 NFC-F 응답 슬롯 시간을 첫 폴링에서만 초과 — 이후 폴링은 정상이라 단말 retry 정책에 따라 증상이 갈림.",
+        resolution="listen 모드 전환 시 캘리브레이션을 RF field 감지 시점으로 선행 이동, 첫 SENSF_REQ부터 슬롯 타이밍 보장. 단말 3종 상호운용 매트릭스 통과 확인.",
+        workaround="단말 retry 2회 이상 설정 시 개찰 체감 정상.",
+        log_excerpt="nfcf: SENSF_REQ rx, slot=0\nrf: analog cal in progress (1.2ms)\nnfcf: response missed slot deadline",
+    ),
+    FailureTemplate(
+        family="NFC Controller",
+        summary="[{chip}] Smart Poster RTD 파싱 오류 — 다중 레코드 NDEF에서 URI 누락",
+        symptom="Smart Poster(URI+Text RTD 조합) 태그를 읽으면 제목만 표시되고 URL이 열리지 않습니다. 단일 URI 레코드 태그는 정상.",
+        repro=["Smart Poster: Text(ko)+Text(en)+URI+Action 레코드", "ME/MB 플래그 조합 변형", "TNF=well-known, type='Sp'"],
+        severity="Major",
+        category="Firmware",
+        root_cause="NDEF 파서가 Smart Poster payload 내부의 중첩 NDEF 메시지를 평탄화하면서 ME(Message End) 플래그를 외부 메시지 기준으로 검사 — 내부 메시지의 URI 레코드가 ME=0이면 미완성으로 판단해 폐기. Smart Poster RTD의 중첩 구조 처리 누락.",
+        resolution="중첩 NDEF 파싱 컨텍스트를 분리해 내부/외부 ME 플래그를 독립 검사. NFC Forum 테스트 벡터(Sp 다중 레코드) 회귀 추가.",
+        workaround="태그를 단일 URI 레코드로 재기록하면 동작.",
+        log_excerpt="ndef: record Sp len=118, nested msg parse\nndef: inner URI rec dropped (ME=0)\napp: smart poster title only, uri=null",
+    ),
+    FailureTemplate(
+        family="NFC Controller",
+        summary="[{chip}] 저전력 폴링(LPCD) 오탐으로 대기 전류 3배 증가",
+        symptom="주머니/금속 케이스 환경에서 저전력 카드 감지(LPCD)가 분당 수십 회 오탐하여 풀 폴링 루프(Activity v2.3)가 반복 기동, 대기 전류가 사양 대비 3배입니다.",
+        repro=["금속 케이스 장착 후 화면 off 대기", "LPCD 임계 기본값", "전류 프로파일 24h 측정"],
+        severity="Major",
+        category="Power",
+        root_cause="LPCD가 안테나 공진 진폭 변화만으로 카드 접근을 판정하는데, 금속 케이스로 기준 진폭 자체가 낮아져 온도 드리프트만으로 임계를 넘음. 오탐 시 Activity 폴링 루프 전체(NFC-A/B/F/V)를 도는 구조라 전류 소모가 큼.",
+        resolution="LPCD 기준 진폭을 주기적 재캘리브레이션(temperature tracking)하고, 오탐 연속 감지 시 임계 자동 상향. 오탐 시 NFC-A 단일 기술 약식 폴링으로 1차 확인 후 풀 루프 진입.",
+        workaround="설정에서 폴링 주기를 500ms→1s로 변경 시 전류 절반.",
+        log_excerpt="lpcd: wake (amp delta 4.1%, thresh 4.0%)\nactivity: full poll A/B/F/V no target (x47/min)\npmu: idle current 2.9mA (spec 0.9mA)",
+    ),
+    FailureTemplate(
+        family="NFC Controller",
+        summary="[{chip}] NFC Authentication Protocol 보안 채널 수립 실패 — nonce 재사용 거부",
+        symptom="NFC Authentication Protocol v1.0 기반 정품 인증 태그와 보안 채널을 맺을 때 두 번째 세션부터 인증이 거부됩니다. 첫 세션은 항상 성공.",
+        repro=["NAP 보안 채널 수립 → 정상 종료", "동일 태그 재태깅", "두 번째 challenge 교환 캡처"],
+        severity="Major",
+        category="Security",
+        root_cause="FW의 난수 생성기가 세션 간 DRBG 상태를 재시드 없이 재사용하면서 RF 재초기화 경로에서 카운터가 리셋 — 동일 nonce가 재발급되어 태그 측 재전송 공격 방지 로직이 인증을 거부. 첫 세션만 부팅 엔트로피로 성공.",
+        resolution="RF deactivation마다 DRBG reseed(아날로그 노이즈 엔트로피 주입)를 강제하고 nonce 단조성 카운터를 비휘발 영역에 유지.",
+        workaround="NFC 기능 off/on 시 임시 회복(부팅 엔트로피 재주입).",
+        log_excerpt="nap: session#2 challenge nonce=0x7A21..(dup)\ntag: auth response SW=6985 (replay suspected)\ndrbg: reseed_counter=0 after rf reinit",
+    ),
+]
+
+
+def generate_nfc_v2_issues(target_count: int = 24, seed: int = 20260612) -> list[Issue]:
+    """NFC 프로토콜 2차 배치 — 1차(seed 20260611)와 분리된 결정론 시드."""
+    return generate_issues(target_count=target_count, seed=seed,
+                           templates=NFC_FAILURE_TEMPLATES_V2, base=datetime(2026, 5, 1))
 
 
 if __name__ == "__main__":
