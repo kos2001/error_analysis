@@ -9,6 +9,7 @@ Endpoints:
 from __future__ import annotations
 
 import json
+import os
 import sys
 from pathlib import Path
 from typing import Optional
@@ -25,6 +26,12 @@ from agent import build_agent  # noqa: E402
 from lang_validator import validate, validate_and_fix  # noqa: E402
 from preprocess import parse_issue  # noqa: E402
 from recommender import Recommender, template_key  # noqa: E402
+
+# 채팅/설명 생성 엔진 선택: agno(OpenRouter) | hermes(Hermes Agent CLI)
+ENGINE = os.getenv("RVP_ENGINE", "agno").lower()
+if ENGINE == "hermes":
+    from hermes_engine import HermesEngine  # noqa: E402
+    _HERMES = HermesEngine()
 
 app = FastAPI(title="LSI Failure Analysis API")
 
@@ -79,9 +86,12 @@ def health():
 
 @app.post("/chat")
 def chat(req: ChatRequest):
-    agent = build_agent(user_id=req.user_id, session_id=req.session_id)
-    resp = agent.run(req.message)
-    raw = resp.content if hasattr(resp, "content") else str(resp)
+    if ENGINE == "hermes":
+        raw = _HERMES.run(req.message, user_id=req.user_id, session_id=req.session_id)
+    else:
+        agent = build_agent(user_id=req.user_id, session_id=req.session_id)
+        resp = agent.run(req.message)
+        raw = resp.content if hasattr(resp, "content") else str(resp)
     vr = validate_and_fix(raw)
     return {
         "answer": vr.rewritten if (not vr.ok and vr.rewritten) else raw,
@@ -93,6 +103,20 @@ def chat(req: ChatRequest):
 
 @app.post("/chat/stream")
 def chat_stream(req: ChatRequest):
+    # hermes CLI는 토큰 스트리밍이 없으므로 완성된 답변을 delta 1건으로 전송
+    if ENGINE == "hermes":
+        def hermes_gen():
+            raw = _HERMES.run(req.message, user_id=req.user_id, session_id=req.session_id)
+            yield f"data: {json.dumps({'delta': raw})}\n\n"
+            vr = validate_and_fix(raw) if raw else None
+            if vr and not vr.ok and vr.rewritten:
+                yield f"data: {json.dumps({'replace': vr.rewritten, 'violations': vr.violations})}\n\n"
+            elif vr:
+                yield f"data: {json.dumps({'language_ok': vr.ok, 'violations': vr.violations})}\n\n"
+            yield "data: [DONE]\n\n"
+
+        return StreamingResponse(hermes_gen(), media_type="text/event-stream")
+
     agent = build_agent(user_id=req.user_id, session_id=req.session_id)
 
     def event_gen():
@@ -116,6 +140,9 @@ def chat_stream(req: ChatRequest):
 
 @app.get("/memories")
 def memories(user_id: str = "web-user"):
+    if ENGINE == "hermes":
+        # hermes 엔진은 세션 컨텍스트로 대화를 유지하며, agno 식 user memory는 없음
+        return {"user_id": user_id, "memories": []}
     agent = build_agent(user_id=user_id, session_id="memories-readonly")
     mems = agent.get_user_memories(user_id=user_id) if hasattr(agent, "get_user_memories") else []
     return {"user_id": user_id, "memories": [getattr(m, "memory", str(m)) for m in (mems or [])]}
@@ -170,11 +197,7 @@ def unresolved_issues():
 
 def _llm_explain(query_rec: dict, matches: list[dict]) -> str:
     """상위 매치들을 근거로 LLM이 종합 root-cause/해결책을 한국어로 작성."""
-    import os
     import requests
-    api_key = os.environ.get("OPENROUTER_API_KEY")
-    if not api_key:
-        return ""
     cases = "\n\n".join(
         f"[{m['key']}] {m['summary']}\n근본원인: {m['root_cause']}\n해결책: {m['resolution']}\n우회책: {m['workaround']}"
         for m in matches)
@@ -186,6 +209,16 @@ def _llm_explain(query_rec: dict, matches: list[dict]) -> str:
         f"## 미해결 이슈\n{query_rec.get('summary','')}\n증상: {query_rec.get('symptom','')}\n"
         f"칩: {query_rec.get('chip','')} / 분류: {query_rec.get('category','')}\n\n"
         f"## 과거 해결 사례\n{cases}\n")
+    if ENGINE == "hermes":
+        try:
+            raw = _HERMES.complete(prompt)
+            vr = validate_and_fix(raw)
+            return vr.rewritten if (not vr.ok and vr.rewritten) else raw
+        except Exception as e:
+            return f"(LLM 설명 생성 실패: {e})"
+    api_key = os.environ.get("OPENROUTER_API_KEY")
+    if not api_key:
+        return ""
     model = os.getenv("RVP_MODEL") or os.getenv("OPENROUTER_MODEL", "openai/gpt-4o-mini")
     base = os.getenv("OPENROUTER_BASE_URL", "https://openrouter.ai/api/v1")
     try:

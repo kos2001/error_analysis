@@ -48,6 +48,16 @@ bash scripts/dev.sh        # 백엔드(:8001) + 프론트(:5173)
 - `고장 분석 추천` 탭: 미해결 이슈 → 유사 해결 사례 + 제안 root-cause/해결책 (+ LLM 종합)
 - `지원 챗봇` 탭: Agno + OpenRouter + graph RAG 고객 지원 에이전트(원형)
 
+### 채팅/설명 엔진 선택 (RVP_ENGINE)
+
+`/chat`, `/chat/stream`, `/recommend?explain` 의 LLM 엔진을 `.env`로 선택:
+
+- `RVP_ENGINE=agno` (기본): Agno + OpenRouter API
+- `RVP_ENGINE=hermes`: 로컬 [Hermes Agent CLI](https://github.com/NousResearch) 서브프로세스
+  (`hermes chat -q ... -Q --cli`). 세션은 hermes `--resume` 으로 유지되며 매핑은
+  `tmp_db/hermes_sessions.json` 에 저장. KB 검색은 GraphRetriever로 미리 수행해
+  프롬프트에 주입(RAG). `HERMES_MODEL`/`HERMES_BIN`/`HERMES_TIMEOUT` 으로 오버라이드.
+
 ## 구조
 
 ```
@@ -72,6 +82,7 @@ web/                    Vite + React + TS + Tailwind
 JIRA_BASE_URL=...        JIRA_PROJECT_KEY=LSI
 JIRA_EMAIL=...           JIRA_API_TOKEN=...      # 또는 JIRA_PAT
 OPENROUTER_API_KEY=...   OPENROUTER_MODEL=...
+RVP_ENGINE=hermes        # 채팅 엔진: agno(기본) | hermes
 ```
 
 ## Stack
