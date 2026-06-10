@@ -46,6 +46,8 @@ export default function FailureAnalysis() {
   const [reco, setReco] = useState<RecoResp | null>(null);
   const [loading, setLoading] = useState(false);
   const [explaining, setExplaining] = useState(false);
+  const [keyInput, setKeyInput] = useState("");
+  const [err, setErr] = useState("");
 
   useEffect(() => {
     fetch(`${API}/reco/stats`).then((r) => r.json()).then(setStats).catch(() => {});
@@ -60,7 +62,7 @@ export default function FailureAnalysis() {
     [issues, q, cat]);
 
   const select = async (issue: Issue) => {
-    setSel(issue); setReco(null); setLoading(true);
+    setSel(issue); setReco(null); setErr(""); setLoading(true);
     try {
       const r = await fetch(`${API}/recommend`, {
         method: "POST", headers: { "Content-Type": "application/json" },
@@ -72,17 +74,51 @@ export default function FailureAnalysis() {
     } finally { setLoading(false); }
   };
 
-  const explain = async () => {
-    if (!sel) return;
+  const runExplain = async (key: string) => {
     setExplaining(true);
     try {
       const r = await fetch(`${API}/recommend`, {
         method: "POST", headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ key: sel.key, k: 4, explain: true }),
+        body: JSON.stringify({ key, k: 4, explain: true }),
       });
       const d: RecoResp = await r.json();
       setReco((prev) => (prev ? { ...prev, explanation: d.explanation } : d));
     } finally { setExplaining(false); }
+  };
+
+  const explain = () => { if (sel) runExplain(sel.key); };
+
+  // Jira 번호 직접 입력 → 유사 사례 검색 + 에이전트(LLM) 종합 분석 자동 실행
+  const analyzeByKey = async () => {
+    const t = keyInput.trim().toUpperCase();
+    if (!t) return;
+    const key = /^\d+$/.test(t) ? `LSI-${t}` : t;
+    setErr("");
+    const found = issues.find((i) => i.key === key);
+    if (found) {
+      await select(found);
+      runExplain(key);
+      return;
+    }
+    // 미해결 목록에 없는 키(해결 이슈 등)는 백엔드 by_key로 직접 조회
+    setSel(null); setReco(null); setLoading(true);
+    try {
+      const r = await fetch(`${API}/recommend`, {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ key, k: 4 }),
+      });
+      const d = await r.json();
+      if (d.error) { setErr(d.error); return; }
+      const q = d.query ?? {};
+      setSel({
+        key, summary: q.summary ?? "", status: q.status ?? "", chip: q.chip ?? "",
+        category: q.category ?? "기타", priority: "", severity: "", symptom: q.symptom ?? "",
+      });
+      setReco(d);
+      runExplain(key);
+    } catch (e: any) {
+      setErr(e.message);
+    } finally { setLoading(false); }
   };
 
   return (
@@ -135,13 +171,33 @@ export default function FailureAnalysis() {
               <span className="bg-white/15 rounded px-2 py-1">검색정확도 P@1 1.0</span>
             </div>
           )}
+          <form
+            onSubmit={(e) => { e.preventDefault(); analyzeByKey(); }}
+            className="mt-3 flex gap-2 max-w-md">
+            <input
+              value={keyInput} onChange={(e) => setKeyInput(e.target.value)}
+              placeholder="Jira 이슈 번호 입력 (예: LSI-7 또는 7)"
+              className="flex-1 px-3 py-2 text-sm rounded-lg text-slate-900 bg-white focus:outline-none focus:ring-2 focus:ring-white/60"
+            />
+            <button type="submit" disabled={loading || explaining}
+              className="px-4 py-2 text-sm rounded-lg bg-white/20 hover:bg-white/30 font-semibold disabled:opacity-50 transition">
+              🤖 에이전트 분석
+            </button>
+          </form>
         </header>
 
-        {!sel ? (
-          <div className="p-16 text-center text-slate-400">
-            ← 왼쪽에서 미해결 이슈를 선택하면, 과거 해결 사례 기반 근본원인과 해결책을 제안합니다.
+        {err && (
+          <div className="m-8 bg-red-50 border border-red-200 rounded-xl p-5 text-red-700 text-sm max-w-4xl">
+            ⚠️ {err}
           </div>
-        ) : (
+        )}
+
+        {!sel && !err ? (
+          <div className="p-16 text-center text-slate-400">
+            위에 Jira 이슈 번호(예: LSI-7)를 입력하거나, ← 왼쪽에서 미해결 이슈를 선택하면
+            과거 해결 사례 기반 근본원인·해결책을 에이전트가 분석합니다.
+          </div>
+        ) : !sel ? null : (
           <div className="p-8 space-y-6 max-w-4xl">
             {/* 선택 이슈 */}
             <section className="bg-white rounded-xl border border-slate-200 p-5">

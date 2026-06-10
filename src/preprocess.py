@@ -78,10 +78,17 @@ def _comment_block(comment: str, label: str) -> str:
     return m.group(1).strip() if m else ""
 
 
+BOT_COMMENT_MARKER = "자동 근본원인 분석"  # RCA-bot 댓글 식별 (scripts/rca_comment.py)
+
+
 def parse_issue(raw: dict) -> dict:
-    """raw 이슈 → 정규화 레코드 (필드 + 엔티티 + 검색용 본문)."""
+    """raw 이슈 → 정규화 레코드 (필드 + 엔티티 + 검색용 본문).
+
+    RCA-bot이 단 자동 분석 댓글은 시니어 분석으로 오인되어 KB를 오염시키므로 제외한다.
+    """
     desc = raw.get("description", "")
-    comment = raw["comments"][0] if raw.get("comments") else ""
+    comments = [c for c in raw.get("comments", []) if BOT_COMMENT_MARKER not in c[:80]]
+    comment = comments[0] if comments else ""
     rec = {
         "key": raw["key"],
         "summary": raw.get("summary", ""),
@@ -100,13 +107,13 @@ def parse_issue(raw: dict) -> dict:
         "resolution": _comment_block(comment, "적용 해결책 (Resolution)"),
         "workaround": _comment_block(comment, "임시 우회책 (Workaround)"),
     }
-    # 검색 결과로 반환할 본문
+    # 검색 결과로 반환할 본문 (봇 댓글 제외)
     rec["context_text"] = (
         f"### {rec['key']} — {rec['summary']}\n\n{desc}\n\n"
-        + ("\n\n".join(raw["comments"]) if raw.get("comments") else "")
+        + "\n\n".join(comments)
     ).strip()
-    # 엔티티: 본문/요약/코멘트 정규식 + 라벨 + 컴포넌트
-    blob = "\n".join([rec["summary"], desc, *raw.get("comments", [])])
+    # 엔티티: 본문/요약/코멘트 정규식 + 라벨 + 컴포넌트 (봇 댓글 제외)
+    blob = "\n".join([rec["summary"], desc, *comments])
     ents = extract_entities(blob)
     ents.update(raw.get("labels", []))
     ents.update(raw.get("components", []))

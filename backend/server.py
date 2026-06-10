@@ -248,7 +248,8 @@ def recommend(req: RecommendRequest):
             "chip": req.chip or "", "category": req.category or "",
             "labels": req.labels or [],
         }
-    result = st["reco"].recommend(query_rec, k=req.k)
+    # 해결 이슈 키로 질의해도 자기 자신은 매치에서 제외
+    result = st["reco"].recommend(query_rec, k=req.k, exclude_key=req.key)
     out = {
         "query": {"key": query_rec.get("key"), "summary": query_rec.get("summary"),
                   "symptom": query_rec.get("symptom"), "chip": query_rec.get("chip"),
