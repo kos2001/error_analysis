@@ -94,7 +94,7 @@ export default function Onboarding({ status, onDone }: { status: any; onDone: ()
         {/* Hermes Gateway */}
         <section className="bg-white rounded-2xl border border-slate-200 p-6 mb-5 shadow-sm">
           <div className="flex items-center justify-between mb-4">
-            <h2 className="font-bold text-indigo-700">⚙️ Hermes Gateway (LLM)</h2>
+            <h2 className="font-bold text-indigo-700">⚙️ LLM 게이트웨이 (OpenRouter)</h2>
             <span className={`text-xs px-2 py-0.5 rounded-full ${hermesReady ? "bg-emerald-100 text-emerald-700" : "bg-slate-100 text-slate-500"}`}>{hermesReady ? "준비됨" : "미설정"}</span>
           </div>
           <div className="space-y-3">
@@ -108,7 +108,8 @@ export default function Onboarding({ status, onDone }: { status: any; onDone: ()
               <TestBadge r={hTest} />
             </div>
 
-            {/* Hermes Agent(CLI 프로필) 셋업 — RVP_ENGINE=hermes 사용 시 */}
+            {/* Hermes Agent(CLI 프로필) 셋업 — per-user 설치형(RVP_ENGINE=hermes)일 때만 */}
+            {status?.engine === "hermes" && (
             <div className="mt-2 rounded-xl bg-slate-50 border border-slate-200 p-4">
               <div className="flex items-center justify-between mb-2">
                 <span className="text-xs font-semibold text-slate-600">🤖 Hermes Agent (CLI 프로필) 셋업</span>
@@ -144,6 +145,7 @@ export default function Onboarding({ status, onDone }: { status: any; onDone: ()
                 </>
               )}
             </div>
+            )}
           </div>
         </section>
 

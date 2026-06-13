@@ -87,6 +87,7 @@ def status() -> dict:
     hermes_ok = bool(
         g.get("OPENROUTER_BASE_URL") and g.get("OPENROUTER_API_KEY") and g.get("OPENROUTER_MODEL"))
     return {
+        "engine": g.get("RVP_ENGINE", "agno").lower(),   # agno(OpenRouter) | hermes(CLI)
         "jira": {
             "configured": jira_ok,
             "base_url": g.get("JIRA_BASE_URL", ""),
