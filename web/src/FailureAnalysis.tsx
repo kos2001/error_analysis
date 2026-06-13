@@ -14,7 +14,7 @@ type Match = {
   embed_cos?: number; entity_overlap?: number; bm25_raw?: number; rerank_score?: number; verified?: boolean;
 };
 type Proposal = { root_cause: string; resolution: string; workaround: string; based_on: string; confidence: number };
-type RecoResp = { query: any; matches: Match[]; proposal: Proposal | null; coverage: boolean; explanation?: string };
+type RecoResp = { query: any; matches: Match[]; proposal: Proposal | null; coverage: boolean; explanation?: string; explanation_citations?: string[]; explanation_dropped_citations?: string[] };
 type GNode = { id: string; label: string; status: string; category: string; chip: string; template: string; center: boolean; relevance: number | null };
 type GEdge = { source: string; target: string; weight: number; same_template: boolean; rerank: number | null };
 type GraphData = { center: string | null; nodes: GNode[]; edges: GEdge[]; has_rerank?: boolean };
@@ -221,7 +221,7 @@ export default function FailureAnalysis() {
         body: JSON.stringify({ key, k: 4, explain: true }),
       });
       const d: RecoResp = await r.json();
-      setReco((prev) => (prev ? { ...prev, explanation: d.explanation } : d));
+      setReco((prev) => (prev ? { ...prev, explanation: d.explanation, explanation_citations: d.explanation_citations, explanation_dropped_citations: d.explanation_dropped_citations } : d));
     } finally { setExplaining(false); }
   };
 
@@ -399,10 +399,24 @@ export default function FailureAnalysis() {
                       </section>
                     )}
 
-                    {/* LLM 설명 */}
+                    {/* LLM 설명 (agno 구조화 출력) */}
                     {reco.explanation && (
-                      <section className="bg-indigo-50 rounded-xl border border-indigo-200 p-5 prose prose-sm max-w-none prose-headings:text-indigo-800 prose-headings:my-2 prose-p:my-1">
-                        <ReactMarkdown remarkPlugins={[remarkGfm]}>{reco.explanation}</ReactMarkdown>
+                      <section className="bg-indigo-50 rounded-xl border border-indigo-200 p-5">
+                        <div className="prose prose-sm max-w-none prose-headings:text-indigo-800 prose-headings:my-2 prose-p:my-1">
+                          <ReactMarkdown remarkPlugins={[remarkGfm]}>{reco.explanation}</ReactMarkdown>
+                        </div>
+                        {reco.explanation_citations && reco.explanation_citations.length > 0 && (
+                          <div className="mt-3 pt-3 border-t border-indigo-200 flex items-center gap-1.5 flex-wrap">
+                            <span className="text-[11px] text-slate-500">📎 근거(검증됨):</span>
+                            {reco.explanation_citations.map((k) => (
+                              <button key={k} onClick={() => goKey(k)}
+                                className="text-[11px] font-mono px-1.5 py-0.5 rounded bg-white border border-indigo-200 text-indigo-600 hover:bg-indigo-100">{k}</button>
+                            ))}
+                          </div>
+                        )}
+                        {reco.explanation_dropped_citations && reco.explanation_dropped_citations.length > 0 && (
+                          <div className="mt-1.5 text-[11px] text-rose-500">⚠ 매치 외 인용 제거됨: {reco.explanation_dropped_citations.join(", ")}</div>
+                        )}
                       </section>
                     )}
 

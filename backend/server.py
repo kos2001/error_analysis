@@ -19,7 +19,7 @@ sys.path.insert(0, str(ROOT / "src"))
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from lang_validator import validate_and_fix  # noqa: E402
 from preprocess import parse_issue  # noqa: E402
@@ -340,43 +340,93 @@ def issue_graph(key: Optional[str] = None, k: int = 12, min_shared: int = 2):
     return {"center": key, "nodes": nodes, "edges": edges, "has_rerank": bool(rr)}
 
 
-def _llm_explain(query_rec: dict, matches: list[dict]) -> str:
-    """상위 매치들을 근거로 LLM이 종합 root-cause/해결책을 한국어로 작성."""
-    import requests
+class RcaExplanation(BaseModel):
+    """LLM 종합 분석의 구조화 출력 (agno output_schema)."""
+    root_cause: str = Field(description="예상 근본 원인 (한국어, 간결)")
+    resolution: str = Field(description="권장 해결 단계 (한국어, 간결)")
+    workaround: str = Field(default="", description="임시 우회책 (한국어, 없으면 빈 문자열)")
+    cited_keys: list[str] = Field(
+        default_factory=list,
+        description="분석 근거로 인용한 과거 이슈 키 목록. 반드시 제공된 '과거 해결 사례'의 키 중에서만 선택(새 키 창작 금지). 예: LSI-49")
+
+
+def _explain_prompt(query_rec: dict, matches: list[dict]) -> str:
     cases = "\n\n".join(
         f"[{m['key']}] {m['summary']}\n근본원인: {m['root_cause']}\n해결책: {m['resolution']}\n우회책: {m['workaround']}"
         for m in matches)
-    prompt = (
-        "당신은 LSI 칩/펌웨어 고장 분석 시니어 엔지니어입니다. 아래는 새로 들어온 미해결 이슈와, "
-        "과거에 해결된 유사 이슈들입니다. 과거 사례를 근거로 이 미해결 이슈의 "
-        "**예상 근본원인**과 **권장 해결 단계**, **임시 우회책**을 한국어로 간결히 제시하세요. "
-        "반드시 근거가 된 과거 이슈 키(예: LSI-6)를 인용하세요. 한자/CJK 한자 금지.\n\n"
+    return (
+        "당신은 LSI 칩/펌웨어 불량 분석 시니어 엔지니어입니다. 아래 미해결 이슈에 대해, "
+        "제공된 '과거 해결 사례'만 근거로 예상 근본원인·권장 해결 단계·임시 우회책을 한국어로 간결히 작성하세요. "
+        "cited_keys에는 근거로 쓴 과거 사례의 키만 넣으세요(새 키 창작 금지). 한자/CJK 한자 금지.\n\n"
         f"## 미해결 이슈\n{query_rec.get('summary','')}\n증상: {query_rec.get('symptom','')}\n"
         f"칩: {query_rec.get('chip','')} / 분류: {query_rec.get('category','')}\n\n"
         f"## 과거 해결 사례\n{cases}\n")
+
+
+def _agno_explain(prompt: str) -> "RcaExplanation | None":
+    """agno Agent + output_schema 로 구조화 RCA 생성 (citations 포함)."""
+    api_key = os.environ.get("OPENROUTER_API_KEY")
+    if not api_key:
+        return None
+    from agno.agent import Agent
+    from agno.models.openrouter import OpenRouter
+    model_id = os.getenv("RVP_MODEL") or os.getenv("OPENROUTER_MODEL", "openai/gpt-4o-mini")
+    base = os.getenv("OPENROUTER_BASE_URL", "https://openrouter.ai/api/v1")
+    agent = Agent(
+        model=OpenRouter(id=model_id, api_key=api_key, base_url=base),
+        output_schema=RcaExplanation,
+        use_json_mode=True,  # 모델 무관 호환(네이티브 structured 미지원 모델 대비)
+        instructions=[
+            "LSI 칩/펌웨어 불량 분석 시니어 엔지니어로서 답한다.",
+            "제공된 '과거 해결 사례'만 근거로 사용하고, cited_keys에는 그 사례의 키만 넣는다(창작 금지).",
+            "모든 텍스트는 한국어. 한자/CJK 한자 금지 — 한글/영문/숫자/문장부호만.",
+        ],
+        markdown=False, telemetry=False,
+    )
+    out = agent.run(input=prompt)
+    return out.content if isinstance(out.content, RcaExplanation) else None
+
+
+def _compose_explanation(exp: "RcaExplanation", valid_keys: set[str]) -> tuple[str, list[str], list[str]]:
+    """구조화 출력 → 표시용 마크다운 + 검증된 인용/탈락 인용. (인용 게이트가 구조적으로 해결됨)"""
+    cited = [k for k in exp.cited_keys if k in valid_keys]
+    dropped = [k for k in exp.cited_keys if k not in valid_keys]  # 환각/무관 키
+    md = f"### 🔍 예상 근본원인\n{exp.root_cause}\n\n### ✅ 권장 해결책\n{exp.resolution}\n"
+    if (exp.workaround or "").strip():
+        md += f"\n### ↪ 임시 우회책\n{exp.workaround}\n"
+    md += f"\n_근거(검증됨): {', '.join(cited)}_" if cited else "\n_근거로 인용된 과거 사례 없음_"
+    return md, cited, dropped
+
+
+def _llm_explain(query_rec: dict, matches: list[dict]) -> dict:
+    """상위 매치 근거로 종합 설명 생성. 반환: {markdown, citations, dropped}.
+
+    agno output_schema 로 구조화 출력 → cited_keys 를 매치 키와 대조 검증해
+    환각 인용을 제거(기존 정규식 인용 게이트를 구조적으로 대체).
+    """
+    import re
+    prompt = _explain_prompt(query_rec, matches)
+    valid_keys = {m["key"] for m in matches}
     if ENGINE == "hermes":
         try:
             raw = _HERMES.complete(prompt)
             vr = validate_and_fix(raw)
-            return vr.rewritten if (not vr.ok and vr.rewritten) else raw
+            text = vr.rewritten if (not vr.ok and vr.rewritten) else raw
         except Exception as e:
-            return f"(LLM 설명 생성 실패: {e})"
-    api_key = os.environ.get("OPENROUTER_API_KEY")
-    if not api_key:
-        return ""
-    model = os.getenv("RVP_MODEL") or os.getenv("OPENROUTER_MODEL", "openai/gpt-4o-mini")
-    base = os.getenv("OPENROUTER_BASE_URL", "https://openrouter.ai/api/v1")
+            return {"markdown": f"(LLM 설명 생성 실패: {e})", "citations": [], "dropped": []}
+        cited = sorted({k for k in re.findall(r"LSI-\d+", text)} & valid_keys)
+        return {"markdown": text, "citations": cited, "dropped": []}
     try:
-        r = requests.post(f"{base}/chat/completions",
-                          headers={"Authorization": f"Bearer {api_key}"},
-                          json={"model": model, "messages": [{"role": "user", "content": prompt}],
-                                "temperature": 0.2}, timeout=60)
-        r.raise_for_status()
-        raw = r.json()["choices"][0]["message"]["content"]
-        vr = validate_and_fix(raw)
-        return vr.rewritten if (not vr.ok and vr.rewritten) else raw
+        exp = _agno_explain(prompt)
     except Exception as e:
-        return f"(LLM 설명 생성 실패: {e})"
+        return {"markdown": f"(LLM 설명 생성 실패: {e})", "citations": [], "dropped": []}
+    if exp is None:
+        return {"markdown": "", "citations": [], "dropped": []}
+    md, cited, dropped = _compose_explanation(exp, valid_keys)
+    vr = validate_and_fix(md)  # CJK 안전망
+    if not vr.ok and vr.rewritten:
+        md = vr.rewritten
+    return {"markdown": md, "citations": cited, "dropped": dropped}
 
 
 @app.post("/recommend")
@@ -406,7 +456,11 @@ def recommend(req: RecommendRequest):
     }
     # 게이트 미통과 시 LLM 설명 생성 안 함 (무관 사례 기반 환각 방지)
     if req.explain and result["matches"] and out["coverage"]:
-        out["explanation"] = _llm_explain(query_rec, result["matches"])
+        ex = _llm_explain(query_rec, result["matches"])
+        out["explanation"] = ex["markdown"]
+        out["explanation_citations"] = ex["citations"]          # 검증된 인용 키
+        if ex["dropped"]:
+            out["explanation_dropped_citations"] = ex["dropped"]  # 환각으로 제거된 키
     return out
 
 
