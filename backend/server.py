@@ -615,9 +615,21 @@ def _md_to_jira(md: str) -> str:
         if m:
             lines.append(f"h{len(m.group(1))}. {m.group(2)}")
         else:
-            lines.append(re.sub(r"^(\s*)[-*]\s+", r"\1* ", ln))
+            lines.append(re.sub(r"^(\s*)-\s+", r"\1* ", ln))  # 글머리 - → *
     s = "\n".join(lines)
-    s = re.sub(r"\*\*([^*\n]+)\*\*", r"*\1*", s)   # 마크다운 볼드 → Jira 볼드
+    s = re.sub(r"`([^`\n]+)`", r"{{\1}}", s)              # 인라인 코드 → Jira monospace
+    # 인라인 강조 마커(**, *)는 평문화한다. Jira 볼드 *x*는 닫는 *에 한글 조사가 붙으면
+    # (*CRC*를) 렌더가 깨져 '*'가 그대로 노출되고, 변환 잔재 단독 '*'도 남는다. RCA 본문엔
+    # 정상 '*'가 없으므로, 줄머리 글머리표('* ')만 남기고 그 외 '*'는 모두 제거한다.
+    out = []
+    for ln in s.split("\n"):
+        m = re.match(r"^(\s*\*\s)(.*)$", ln)              # 글머리표 줄
+        out.append((m.group(1) + m.group(2).replace("*", "")) if m else ln.replace("*", ""))
+    s = "\n".join(out)
+    # 이슈 키(LSI-123) monospace 래핑: 맨키워드는 Jira가 요약·상태 카드로 자동 확장돼
+    # 참조가 길어진다. {{...}}로 감싸면 짧은 평문으로 렌더(카드 미확장). 중복 래핑 방지.
+    s = re.sub(r"\{\{LSI-\d+\}\}|LSI-\d+",
+               lambda m: m.group(0) if m.group(0).startswith("{{") else "{{" + m.group(0) + "}}", s)
     return s
 
 
