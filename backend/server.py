@@ -59,9 +59,15 @@ def _reco_state() -> dict:
         "by_key": {r["key"]: r for r in records},
         "resolved": resolved,
         "unresolved": unresolved,
-        # hybrid_embed + 단계 인지 문서(제기+분석): paraphrase 평가 P@1 .875/gate .95
-        # (A/B: tmp_db/eval_recommender.json, claudedocs/similarity_search_plan.md)
-        "reco": Recommender(resolved, method=os.getenv("RVP_RECO_METHOD", "hybrid_embed")),
+        # hybrid_embed + 단계 인지 문서(제기+분석). RVP_RERANK=1 → 2차 cross-encoder
+        # 재순위 + rerank 강도 게이트(측정: paraphrase P@1 .898→1.0, 무관 완전 분리).
+        # (A/B: tmp_db/ab_reranker.json, claudedocs/similarity_search_plan.md)
+        "reco": Recommender(
+            resolved,
+            method=os.getenv("RVP_RECO_METHOD", "hybrid_embed"),
+            rerank=os.getenv("RVP_RERANK", "0") == "1",
+            rerank_model=os.getenv("RVP_RERANK_MODEL", "cohere/rerank-v3.5"),
+        ),
     })
     return _RECO_STATE
 

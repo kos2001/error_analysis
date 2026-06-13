@@ -1,5 +1,17 @@
 # 유사도 검색 개선 작업 계획 — 측정 기반
 
+> 2026-06-13 추가 (2차 reranker 통합 + 강도 기반 게이트 재보정):
+> 임베딩 모델 A/B(MiniLM vs e5-large 로컬 vs bge-m3 OpenRouter, `scripts/ab_embedding_models.py`)
+> 결과 P@1 .898/.898/.918 — 전부 노이즈 범위 → **임베딩 교체는 병목 아님, 비채택**.
+> 대신 cross-encoder 재순위(`cohere/rerank-v3.5`, OpenRouter) 통합:
+>   `recommender.py` recommend()가 1차 top-20을 재순위(RVP_RERANK=1). 실패 시 1차 폴백.
+>   rerank relevance_score를 coverage 게이트 신호로 채택 — RRF/코사인보다 분리력 큼
+>   (측정: 정답 최상위 min 0.384 vs 무관 max 0.042 → 게이트 임계 0.20으로 재보정).
+> 통합 후 paraphrase 49pos/20neg: P@1 .898→**1.0**, MRR .915→1.0, gate_pass .939→1.0,
+>   junk_blocked .95→**1.0**(FP·FN 0). (`scripts/ab_reranker.py`, `tmp_db/ab_reranker.json`)
+> 주의: 합성 평가셋 상한 — 실데이터 재검증 + rerank API 지연/의존 고려 필요.
+> 이로써 P0-2(게이트)·P3(UI/댓글 신뢰도 라벨)을 강도 점수로 재구현 가능.
+
 > 2026-06-13 추가 (단계 인지 매칭 확장 — '조사 신호' 질의 주입):
 > 전 이슈에 협업 스레드 코멘트(고객 후속·트리아지·조사·해결/검증)를 부착(264건).
 > 진행 중 이슈의 **관찰 단계 코멘트**(🔬 조사/🧰 트리아지/📩 고객 후속)를 `parse_issue`가

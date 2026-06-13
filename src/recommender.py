@@ -97,6 +97,15 @@ class Recommender:
     verified_tiebreak: float = 1e-4      # 검증 완료(✅+🙌) 사례 동점 시 우선 노출(M2).
     # 1e-4 근거: 텍스트/메타 신호(RRF≈0.03, boost 0.15)를 절대 덮지 않는 크기 —
     # 점수가 사실상 같을 때만 검증 사례를 위로 올리는 순수 tie-breaker.
+    embed_model: str = ""                 # "" → 기본 MiniLM. 교체 가능(e5-large, bge-m3 등).
+    embed_backend: str = "fastembed"      # fastembed(로컬) | openrouter(API)
+    # ---- 2차 재순위(reranker) — cross-encoder로 1차 top-N 재채점 ----
+    rerank: bool = False                  # True → recommend()에서 top-N 재순위 + 강도 게이트
+    rerank_model: str = "cohere/rerank-v3.5"
+    rerank_top_n: int = 20                # 1차에서 재순위에 넘길 후보 수
+    rerank_gate: float = 0.20             # coverage 게이트 임계(rerank relevance_score).
+    # 0.20 근거: 측정(scripts/ab_reranker.py, 2026-06-13) — 정답 최상위 점수 최소 0.384,
+    # 무관 질의 최상위 최대 0.042. 둘 사이 양쪽 마진(≈0.16/0.18) 확보하는 값.
     _embedder: object = field(default=None, repr=False)
     _kb_emb: object = field(default=None, repr=False)
 
@@ -115,24 +124,61 @@ class Recommender:
             except ImportError:
                 self.signals = False
 
-    # ---------- 임베딩(선택) ----------
+    # ---------- 임베딩(선택, 교체 가능) ----------
     _EMBED_MODEL = "sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2"
 
+    def _model_name(self) -> str:
+        return self.embed_model or self._EMBED_MODEL
+
+    def _prefixed(self, texts: list[str], is_query: bool) -> list[str]:
+        """e5 계열은 query:/passage: 프리픽스를 요구한다(다른 모델은 원문 그대로)."""
+        if "e5" in self._model_name().lower():
+            tag = "query: " if is_query else "passage: "
+            return [tag + t for t in texts]
+        return texts
+
+    def _embed_texts(self, texts: list[str], is_query: bool):
+        import numpy as np
+        texts = self._prefixed(texts, is_query)
+        if self.embed_backend == "openrouter":
+            return np.array(self._openrouter_embed(texts))
+        return np.array(list(self._embedder.embed(texts)))
+
+    def _openrouter_embed(self, texts: list[str]) -> list[list[float]]:
+        """OpenRouter /embeddings 호출(배치). OPENROUTER_API_KEY 필요."""
+        import os
+        import requests
+        key = os.environ["OPENROUTER_API_KEY"]
+        base = os.getenv("OPENROUTER_BASE_URL", "https://openrouter.ai/api/v1")
+        out: list[list[float]] = []
+        for i in range(0, len(texts), 64):  # rate/payload 여유 배치
+            chunk = texts[i:i + 64]
+            r = requests.post(f"{base}/embeddings",
+                              headers={"Authorization": f"Bearer {key}"},
+                              json={"model": self._model_name(), "input": chunk}, timeout=120)
+            r.raise_for_status()
+            data = sorted(r.json()["data"], key=lambda x: x["index"])
+            out.extend(d["embedding"] for d in data)
+        return out
+
     def _init_embed(self):
-        from fastembed import TextEmbedding
         import hashlib
         import numpy as np
         from pathlib import Path
-        # 다국어 소형 모델 (한국어 포함)
-        self._embedder = TextEmbedding(model_name=self._EMBED_MODEL)
         self._np = np
-        # KB 임베딩 디스크 캐시 — 문서 내용+모델이 같으면 서버 재기동 시 재계산 생략
-        digest = hashlib.md5(("\n".join(self._docs) + self._EMBED_MODEL).encode()).hexdigest()[:12]
+        if self.embed_backend == "fastembed":
+            from fastembed import TextEmbedding
+            self._embedder = TextEmbedding(model_name=self._model_name())
+        else:
+            self._embedder = None  # API 백엔드는 객체 불필요(_openrouter_embed 사용)
+        # KB 임베딩 디스크 캐시 — 문서+모델(+비기본 백엔드)이 같으면 재계산 생략
+        sig = self._model_name() + ("" if self.embed_backend == "fastembed" else f"@{self.embed_backend}")
+        digest = hashlib.md5(("\n".join(self._docs) + sig).encode()).hexdigest()[:12]
         cache = Path(__file__).resolve().parent.parent / "tmp_db" / f"kb_emb_{digest}.npz"
         if cache.exists():
             self._kb_emb = np.load(cache)["emb"]
             return
-        self._kb_emb = np.array(list(self._embedder.embed(self._docs)))
+        self._kb_emb = self._embed_texts(self._docs, is_query=False)
         try:
             cache.parent.mkdir(exist_ok=True)
             np.savez_compressed(cache, emb=self._kb_emb)
@@ -141,8 +187,7 @@ class Recommender:
 
     def _cos_all(self, q: str):
         """질의 vs KB 전체 코사인 유사도 배열 (강도 신호)."""
-        qv = next(iter(self._embedder.embed([q])))
-        qv = self._np.array(qv)
+        qv = self._embed_texts([q], is_query=True)[0]
         return self._kb_emb @ qv / (
             self._np.linalg.norm(self._kb_emb, axis=1) * self._np.linalg.norm(qv) + 1e-9)
 
@@ -218,12 +263,27 @@ class Recommender:
         return ranked
 
     def recommend(self, query_rec: dict, k: int = 3, exclude_key: str | None = None) -> dict:
-        ranked = self.rank(query_rec, exclude_key)[:k]
+        ranked_all = self.rank(query_rec, exclude_key)
+        qtext = _query_text(query_rec)
+        # ---- 2차 재순위(reranker): 1차 top-N을 cross-encoder로 재채점 ----
+        rr_scores: dict[int, float] = {}
+        if self.rerank and ranked_all:
+            from reranker import rerank as _rerank  # 지연 임포트(선택 의존)
+            cand = [i for i, _ in ranked_all[:self.rerank_top_n]]
+            docs = [_doc_text(self.kb[i], analysis=self.doc_analysis) for i in cand]
+            try:
+                order = _rerank(qtext, docs, model=self.rerank_model)
+                rr_scores = {cand[idx]: sc for idx, sc in order}
+                reranked = [(cand[idx], sc) for idx, sc in order]
+                tail = [(i, s) for i, s in ranked_all if i not in rr_scores]
+                ranked_all = reranked + tail
+            except Exception:
+                pass  # rerank 실패 시 1차 순위로 폴백(파이프라인 무중단)
+        ranked = ranked_all[:k]
         q_ents = query_entities(query_rec)
         # 강도 신호 — RRF(순위 기반) 점수와 별개. 게이트/신뢰도 표시는 이것만 사용한다.
         cos = bm25_raw = None
         if self.signals and self._embedder is not None:
-            qtext = _query_text(query_rec)
             cos = self._cos_all(qtext)
             bm25_raw = self._bm25.get_scores(tokenize(qtext))
         matches = []
@@ -243,20 +303,29 @@ class Recommender:
             if cos is not None:
                 m["embed_cos"] = round(float(cos[i]), 3)
                 m["bm25_raw"] = round(float(bm25_raw[i]), 2)
+            if i in rr_scores:
+                m["rerank_score"] = round(rr_scores[i], 4)
             matches.append(m)
         # coverage 게이트: 무관 질의 차단.
-        # 측정(2026-06: claudedocs/similarity_search_plan.md): 무관 질의 max_cos<=0.474 &
-        # 엔티티 겹침 0, 정답 paraphrase는 cos>=0.529 — 코사인 0.50 또는 엔티티 1개로 통과.
         coverage = bool(matches)
         gate = None
-        if cos is not None and len(cos):
+        if self.rerank:
+            # 강도 기반 게이트 — rerank relevance_score(재보정 임계 rerank_gate).
+            # RRF/코사인 게이트보다 분리력이 큼(측정: 정답 min 0.384 vs 무관 max 0.042).
+            top_rr = max(rr_scores.values(), default=0.0)
+            coverage = bool(matches) and top_rr >= self.rerank_gate
+            gate = {"signal": "rerank", "rerank_top": round(top_rr, 3),
+                    "threshold": self.rerank_gate, "passed": coverage}
+        elif cos is not None and len(cos):
+            # 측정(2026-06): 무관 질의 max_cos<=0.474 & 엔티티 겹침 0, 정답 cos>=0.529.
             masked = cos.copy()
             if exclude_key is not None and exclude_key in self._keys:
                 masked[self._keys.index(exclude_key)] = -1.0
             max_cos = float(masked.max())
             top_overlap = max((m["entity_overlap"] for m in matches), default=0)
             coverage = bool(matches) and (max_cos >= self.gate_cos or top_overlap >= 1)
-            gate = {"max_cos": round(max_cos, 3), "top_entity_overlap": top_overlap,
+            gate = {"signal": "embed_cos", "max_cos": round(max_cos, 3),
+                    "top_entity_overlap": top_overlap,
                     "cos_threshold": self.gate_cos, "passed": coverage}
         # 제안: 상위 매치들의 다수결 클래스 → 그 클래스 대표의 해결책 (게이트 통과 시에만)
         proposal = None
