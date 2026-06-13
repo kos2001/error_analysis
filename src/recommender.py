@@ -336,12 +336,28 @@ class Recommender:
             in_class = [m for m in matches if template_key(m["summary"]) == top_class]
             # 대표 사례: 동일 클래스 내 '검증 완료' 사례를 우선(없으면 최상위)(M2).
             rep = next((m for m in in_class if m["verified"]), in_class[0])
+            # 신뢰도 = 합의(agreement) × 관련도(rerank) + 검증(verified) 소폭 상향.
+            #  - agreement: top-k 중 다수결 클래스 비율(사례들이 한 원인으로 수렴하는가)
+            #  - relevance: 대표 사례 rerank relevance(0~1, 보정 점수) — 합의는 높아도
+            #    실제 관련도가 낮으면(약한 매칭) 신뢰도를 끌어내려 과신을 방지.
+            #    rerank 미사용 시 None → 기존(합의만)으로 폴백(회귀 없음).
+            #  - verified: 고객 검증까지 끝난 근거면 (1-conf)*0.1 만큼 상향(상한 1.0).
+            agreement = cnt / len(matches)
+            relevance = rep.get("rerank_score")
+            conf = agreement * relevance if relevance is not None else agreement
+            if rep["verified"]:
+                conf = conf + (1.0 - conf) * 0.10
             proposal = {
                 "root_cause": rep["root_cause"], "resolution": rep["resolution"],
                 "workaround": rep["workaround"], "based_on": rep["key"],
-                "confidence": round(cnt / len(matches), 2),
-                # 검증 신뢰도: 다수결 비율 + 대표 사례 검증 여부(댓글 신뢰도 톤 산출용).
+                "confidence": round(conf, 2),
                 "based_on_verified": rep["verified"],
+                # 신뢰도 근거 분해(UI/댓글 톤·디버깅용)
+                "confidence_basis": {
+                    "agreement": round(agreement, 2),
+                    "rerank_relevance": round(relevance, 3) if relevance is not None else None,
+                    "verified_bonus": rep["verified"],
+                },
             }
         return {"matches": matches, "proposal": proposal, "coverage": coverage, "gate": gate}
 
