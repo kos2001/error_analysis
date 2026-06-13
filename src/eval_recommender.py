@@ -119,6 +119,8 @@ def main() -> int:
                     help="KB 문서 표현 단계 A/B (both=두 변형 모두 평가)")
     ap.add_argument("--boost", default=None, type=float,
                     help="동일 칩/분류 부스트 오버라이드 (기본: Recommender 기본값)")
+    ap.add_argument("--rerank", action="store_true",
+                    help="2차 cross-encoder 재순위 + rerank 강도 게이트 사용(paraphrase 평가)")
     args = ap.parse_args()
 
     raw = load_all(args.refresh)
@@ -143,6 +145,8 @@ def main() -> int:
             kw = {"doc_analysis": st == "report+analysis"}
             if args.boost is not None:
                 kw["boost"] = args.boost
+            if args.rerank:
+                kw["rerank"] = True
             rec = Recommender(resolved, method=m, **kw)
             tag = f"{m}|{st}" + (f"|b{args.boost}" if args.boost is not None else "")
             loo_r = evaluate(rec, resolved, kb_keys, loo=True)
