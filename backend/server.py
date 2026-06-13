@@ -501,8 +501,11 @@ def _agno_stream(prompt: str, reasoning: bool = False):
     kw = {}
     if reasoning:
         kw = {"reasoning": True, "reasoning_min_steps": 2, "reasoning_max_steps": 6}
+    # 한국어는 토큰 소모가 커 2800이면 해결단계·우회책·재현테스트 도중 잘린다.
+    # 전 섹션을 담도록 상한을 넉넉히(기본 8000), env로 조정 가능.
+    max_tokens = int(os.getenv("RVP_EXPLAIN_MAX_TOKENS", "8000"))
     agent = Agent(
-        model=OpenRouter(id=model_id, api_key=api_key, base_url=base, max_tokens=2800),
+        model=OpenRouter(id=model_id, api_key=api_key, base_url=base, max_tokens=max_tokens),
         instructions=[
             "LSI 칩/펌웨어 불량 분석 시니어 엔지니어로서 한국어 마크다운으로 깊이 있게 답한다.",
             "지시된 모든 섹션을 순서대로 빠짐없이 작성한다(특히 권장 해결 단계·우회책 누락 금지).",
