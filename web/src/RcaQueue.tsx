@@ -6,26 +6,34 @@ const API = (import.meta as any).env?.VITE_API ?? "http://127.0.0.1:8001";
 
 type QItem = {
   key: string; summary: string; status: string; body: string;
-  confidence: number; based_on_verified: boolean; needs_review: boolean;
-  based_on: string; created_at: string; state: string; comment_id?: string;
+  confidence: number | null; based_on_verified: boolean; needs_review: boolean;
+  based_on: string; created_at: string; state: string; comment_id?: string; source?: string;
 };
 
 export default function RcaQueue({ onBack, onChange }: { onBack: () => void; onChange?: () => void }) {
   const [items, setItems] = useState<QItem[]>([]);
   const [busy, setBusy] = useState<string>("");
   const [msg, setMsg] = useState<{ key: string; ok: boolean; text: string } | null>(null);
+  const [edits, setEdits] = useState<Record<string, string>>({});   // key → 수정 본문
+  const [editing, setEditing] = useState<string>("");                // 현재 편집 중 key
 
   const load = () => fetch(`${API}/rca/pending`).then((r) => r.json()).then((d) => setItems(d.items ?? [])).catch(() => {});
   useEffect(() => { load(); }, []);
 
-  const act = async (key: string, action: "approve" | "reject") => {
+  const bodyOf = (it: QItem) => (edits[it.key] ?? it.body);
+  const isEdited = (it: QItem) => (it.key in edits) && edits[it.key].trim() !== it.body.trim();
+
+  const act = async (it: QItem, action: "approve" | "reject") => {
+    const key = it.key;
     setBusy(key + action); setMsg(null);
     try {
+      const payload: any = { key };
+      if (action === "approve" && isEdited(it)) payload.body = edits[key];  // 수정본 게시
       const d = await fetch(`${API}/rca/${action}`, {
-        method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ key }),
+        method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(payload),
       }).then((r) => r.json());
       if (action === "approve") {
-        setMsg(d.ok ? { key, ok: true, text: `Jira 게시 완료${d.item?.comment_id ? ` (댓글 #${d.item.comment_id})` : ""}` }
+        setMsg(d.ok ? { key, ok: true, text: `Jira 게시 완료${d.edited ? " (수정본, 메모리 저장됨)" : ""}${d.item?.comment_id ? ` · 댓글 #${d.item.comment_id}` : ""}` }
                     : { key, ok: false, text: `게시 실패: ${d.error || ""}` });
       } else {
         setMsg({ key, ok: true, text: "거부됨 (게시 안 함)" });
@@ -55,24 +63,40 @@ export default function RcaQueue({ onBack, onChange }: { onBack: () => void; onC
                   <span className={`text-[11px] px-2 py-0.5 rounded-full ${it.needs_review ? "bg-amber-100 text-amber-700" : "bg-emerald-100 text-emerald-700"}`}>
                     {it.needs_review ? "⚠ 검토 필요" : "자동 게시 적합"}
                   </span>
-                  <span className="text-[11px] text-slate-500">신뢰도 {Math.round((it.confidence || 0) * 100)}%{it.based_on_verified ? " · 검증 근거" : ""}</span>
+                  <span className="text-[11px] px-2 py-0.5 rounded-full bg-indigo-50 text-indigo-600">
+                    {it.source === "analysis" ? "LLM 종합" : "제안 기반"}
+                  </span>
+                  {it.confidence != null && (
+                    <span className="text-[11px] text-slate-500">신뢰도 {Math.round(it.confidence * 100)}%{it.based_on_verified ? " · 검증 근거" : ""}</span>
+                  )}
                 </div>
                 <div className="text-sm font-medium leading-snug mb-2">{it.summary}</div>
-                <details className="text-xs text-slate-600">
-                  <summary className="cursor-pointer text-slate-500 hover:text-indigo-600">게시 본문 미리보기</summary>
-                  <div className="mt-2 p-3 bg-slate-50 rounded border border-slate-200 prose prose-sm max-w-none whitespace-pre-wrap">
-                    <ReactMarkdown remarkPlugins={[remarkGfm]}>{it.body}</ReactMarkdown>
-                  </div>
-                </details>
+                <div className="flex items-center gap-2 mb-1">
+                  <button onClick={() => { setEditing(editing === it.key ? "" : it.key); if (!(it.key in edits)) setEdits((e) => ({ ...e, [it.key]: it.body })); }}
+                    className="text-[11px] text-slate-500 hover:text-indigo-600">{editing === it.key ? "▾ 미리보기로" : "✏️ 게시 전 수정"}</button>
+                  {isEdited(it) && <span className="text-[11px] text-amber-600">● 수정됨 (수정본이 게시·저장됩니다)</span>}
+                </div>
+                {editing === it.key ? (
+                  <textarea value={bodyOf(it)} onChange={(e) => setEdits((s) => ({ ...s, [it.key]: e.target.value }))}
+                    rows={12}
+                    className="w-full text-xs font-mono p-3 rounded border border-indigo-300 focus:outline-none focus:ring-1 focus:ring-indigo-400" />
+                ) : (
+                  <details className="text-xs text-slate-600">
+                    <summary className="cursor-pointer text-slate-500 hover:text-indigo-600">게시 본문 미리보기{isEdited(it) ? " (수정본)" : ""}</summary>
+                    <div className="mt-2 p-3 bg-slate-50 rounded border border-slate-200 prose prose-sm max-w-none whitespace-pre-wrap">
+                      <ReactMarkdown remarkPlugins={[remarkGfm]}>{bodyOf(it)}</ReactMarkdown>
+                    </div>
+                  </details>
+                )}
                 {msg && msg.key === it.key && (
                   <div className={`mt-2 text-xs ${msg.ok ? "text-emerald-600" : "text-rose-600"}`}>{msg.ok ? "✓" : "✗"} {msg.text}</div>
                 )}
                 <div className="mt-3 flex gap-2">
-                  <button onClick={() => act(it.key, "approve")} disabled={!!busy}
+                  <button onClick={() => act(it, "approve")} disabled={!!busy}
                     className="text-sm px-4 py-2 rounded-lg bg-emerald-600 text-white hover:bg-emerald-700 disabled:opacity-50">
-                    {busy === it.key + "approve" ? "게시 중…" : "✅ 승인하고 Jira 게시"}
+                    {busy === it.key + "approve" ? "게시 중…" : (isEdited(it) ? "✅ 수정본 승인·게시" : "✅ 승인하고 Jira 게시")}
                   </button>
-                  <button onClick={() => act(it.key, "reject")} disabled={!!busy}
+                  <button onClick={() => act(it, "reject")} disabled={!!busy}
                     className="text-sm px-4 py-2 rounded-lg border border-slate-300 text-slate-600 hover:bg-slate-50 disabled:opacity-50">
                     {busy === it.key + "reject" ? "처리 중…" : "거부"}
                   </button>
