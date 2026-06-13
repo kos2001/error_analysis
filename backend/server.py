@@ -752,6 +752,72 @@ def rca_reject(req: KeyBody):
     return {"ok": bool(updated), "item": updated, "counts": rca_queue.counts()}
 
 
+class JudgeScore(BaseModel):
+    """수정사항 검증 채점(구조화 출력)."""
+    score: int = Field(description="1~10 정수 — 근거 충실도·인용 정합·실행가능성 종합")
+    passed: bool = Field(description="7점 이상이면 true")
+    reasoning: str = Field(description="채점 근거 (한국어 1~2문장)")
+
+
+def _judge_rca(ctx: str, body: str) -> "JudgeScore | None":
+    """RCA 분석을 근거 사례 대비 채점 — RcaExplanation과 동일한 구조화 출력 경로."""
+    api_key = os.environ.get("OPENROUTER_API_KEY")
+    if not api_key:
+        return None
+    try:
+        from agno.agent import Agent
+        from agno.models.openrouter import OpenRouter
+        jm = os.getenv("RVP_JUDGE_MODEL") or os.getenv("RVP_MODEL") or os.getenv("OPENROUTER_MODEL", "openai/gpt-4o-mini")
+        base = os.getenv("OPENROUTER_BASE_URL", "https://openrouter.ai/api/v1")
+        agent = Agent(
+            model=OpenRouter(id=jm, api_key=api_key, base_url=base),
+            output_schema=JudgeScore, use_json_mode=True, markdown=False, telemetry=False,
+            instructions=["LSI 불량 분석 RCA 채점관. 제공된 근거 사례에 비추어 평가한다.",
+                          "기준: 근거 충실도(날조·환각 감점), 인용 정합, 권장 해결 단계의 구체성·실행가능성, 한자 금지 준수.",
+                          "한국어로 간단히 채점한다."])
+        out = agent.run(input=f"## 근거 사례\n{ctx}\n\n## 채점할 RCA 분석\n{body}")
+        return out.content if isinstance(out.content, JudgeScore) else None
+    except Exception:
+        return None
+
+
+class ValidateBody(BaseModel):
+    key: str
+    body: Optional[str] = None   # 현재(수정된) 본문; 없으면 큐의 원본
+
+
+@app.post("/rca/validate")
+def rca_validate(req: ValidateBody):
+    """수정사항 검증 — (1) 가드레일: 인용 키 ⊆ KB, 한자/CJK, 빈값  (2) Agent-as-Judge:
+    근거 충실도·인용 정합·실행가능성 1~10 채점. 승인 전 품질 확인용(차단 아님)."""
+    import re
+    import rca_queue
+    st = _reco_state()
+    body = (req.body if (req.body and req.body.strip()) else (rca_queue.get(req.key) or {}).get("body", "")).strip()
+    if not body:
+        return {"error": "검증할 본문이 없습니다."}
+    valid = set(st["by_key"].keys())
+    cited = set(re.findall(r"LSI-\d+", body))
+    invalid = sorted(c for c in cited if c not in valid)
+    vr = validate_and_fix(body)
+    out = {
+        "citations_ok": not invalid, "invalid_citations": invalid,
+        "lang_ok": bool(vr.ok), "non_empty": True,
+    }
+    # LLM 판정 — 구조화 출력(검증된 use_json_mode 경로)으로 근거 충실도·실행가능성 채점
+    rec = st["by_key"].get(req.key, {})
+    cited_recs = [st["by_key"][k] for k in cited if k in st["by_key"]]
+    ctx = (f"미해결 이슈: {rec.get('summary','')}\n증상: {rec.get('symptom','')}\n\n근거 사례:\n"
+           + "\n".join(f"[{r['key']}] 근본원인: {r.get('root_cause','')} / 해결: {r.get('resolution','')}"
+                       for r in cited_recs))
+    jr = _judge_rca(ctx, body)
+    if jr is not None:
+        out["judge_score"] = jr.score
+        out["judge_passed"] = jr.passed
+        out["judge_reasoning"] = jr.reasoning[:400]
+    return out
+
+
 if __name__ == "__main__":
     import uvicorn
     import os as _os

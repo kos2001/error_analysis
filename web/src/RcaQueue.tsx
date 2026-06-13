@@ -16,12 +16,25 @@ export default function RcaQueue({ onBack, onChange }: { onBack: () => void; onC
   const [msg, setMsg] = useState<{ key: string; ok: boolean; text: string } | null>(null);
   const [edits, setEdits] = useState<Record<string, string>>({});   // key → 수정 본문
   const [editing, setEditing] = useState<string>("");                // 현재 편집 중 key
+  const [valid, setValid] = useState<Record<string, any>>({});       // key → 검증 결과
+  const [validating, setValidating] = useState<string>("");
 
   const load = () => fetch(`${API}/rca/pending`).then((r) => r.json()).then((d) => setItems(d.items ?? [])).catch(() => {});
   useEffect(() => { load(); }, []);
 
   const bodyOf = (it: QItem) => (edits[it.key] ?? it.body);
   const isEdited = (it: QItem) => (it.key in edits) && edits[it.key].trim() !== it.body.trim();
+
+  const validate = async (it: QItem) => {
+    setValidating(it.key);
+    try {
+      const d = await fetch(`${API}/rca/validate`, {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ key: it.key, body: bodyOf(it) }),
+      }).then((r) => r.json());
+      setValid((v) => ({ ...v, [it.key]: d }));
+    } finally { setValidating(""); }
+  };
 
   const act = async (it: QItem, action: "approve" | "reject") => {
     const key = it.key;
@@ -88,10 +101,31 @@ export default function RcaQueue({ onBack, onChange }: { onBack: () => void; onC
                     </div>
                   </details>
                 )}
+                {valid[it.key] && (
+                  <div className="mt-2 text-[11px] bg-slate-50 border border-slate-200 rounded p-2 space-y-0.5">
+                    <div className={valid[it.key].citations_ok ? "text-emerald-600" : "text-rose-600"}>
+                      {valid[it.key].citations_ok ? "✓ 인용 모두 KB에 존재" : `✗ 매치 외 인용: ${(valid[it.key].invalid_citations || []).join(", ")}`}
+                    </div>
+                    <div className={valid[it.key].lang_ok ? "text-emerald-600" : "text-rose-600"}>
+                      {valid[it.key].lang_ok ? "✓ 언어 규칙 OK(한자 없음)" : "✗ 한자/CJK 검출"}
+                    </div>
+                    {valid[it.key].judge_score != null && (
+                      <div className={valid[it.key].judge_passed ? "text-emerald-700" : "text-amber-700"}>
+                        🧑‍⚖️ 품질 점수 {valid[it.key].judge_score}/10 {valid[it.key].judge_passed ? "(통과)" : "(검토 권장)"}
+                        {valid[it.key].judge_reasoning ? ` — ${valid[it.key].judge_reasoning}` : ""}
+                      </div>
+                    )}
+                    {valid[it.key].judge_error && <div className="text-slate-400">판정 생략: {valid[it.key].judge_error}</div>}
+                  </div>
+                )}
                 {msg && msg.key === it.key && (
                   <div className={`mt-2 text-xs ${msg.ok ? "text-emerald-600" : "text-rose-600"}`}>{msg.ok ? "✓" : "✗"} {msg.text}</div>
                 )}
                 <div className="mt-3 flex gap-2">
+                  <button onClick={() => validate(it)} disabled={!!validating}
+                    className="text-sm px-4 py-2 rounded-lg border border-indigo-300 text-indigo-600 hover:bg-indigo-50 disabled:opacity-50">
+                    {validating === it.key ? "검증 중…" : "🔎 검증"}
+                  </button>
                   <button onClick={() => act(it, "approve")} disabled={!!busy}
                     className="text-sm px-4 py-2 rounded-lg bg-emerald-600 text-white hover:bg-emerald-700 disabled:opacity-50">
                     {busy === it.key + "approve" ? "게시 중…" : (isEdited(it) ? "✅ 수정본 승인·게시" : "✅ 승인하고 Jira 게시")}
