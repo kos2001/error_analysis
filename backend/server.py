@@ -485,39 +485,53 @@ def _explain_prompt_md(query_rec: dict, match_recs: list[dict]) -> str:
         f"## 과거 해결 사례\n{cases}\n{fewshot}")
 
 
-def _agno_stream(prompt: str, reasoning: bool = False):
-    """agno Agent 스트리밍 — 토큰 델타(str)를 순차 yield.
+def _llm_stream(prompt: str, reasoning: bool = False):
+    """OpenRouter chat/completions 스트리밍 — 콘텐츠 토큰(str)만 순차 yield.
 
-    reasoning=True 면 모델이 단계적 추론 후 답해 분석 깊이가 커진다(첫 토큰 지연↑).
+    agno 스트리밍 래퍼는 추론 모델(deepseek-v4-flash 등)에서 콘텐츠 스트림을
+    조기 종료시켜 답변이 헤더/문장 도중에 잘리는 문제가 있다(비스트리밍/직접
+    스트리밍은 정상 완결). 따라서 OpenRouter SSE를 직접 호출한다. 추론 델타는
+    별도 'reasoning' 필드로 오므로 무시하고 최종 콘텐츠만 전송한다.
     """
+    import urllib.request
     api_key = os.environ.get("OPENROUTER_API_KEY")
     if not api_key:
         return
-    from agno.agent import Agent
-    from agno.models.openrouter import OpenRouter
-    from agno.run.agent import RunContentEvent
     model_id = os.getenv("RVP_MODEL") or os.getenv("OPENROUTER_MODEL", "openai/gpt-4o-mini")
     base = os.getenv("OPENROUTER_BASE_URL", "https://openrouter.ai/api/v1")
-    kw = {}
-    if reasoning:
-        kw = {"reasoning": True, "reasoning_min_steps": 2, "reasoning_max_steps": 6}
-    # 한국어는 토큰 소모가 커 2800이면 해결단계·우회책·재현테스트 도중 잘린다.
-    # 전 섹션을 담도록 상한을 넉넉히(기본 8000), env로 조정 가능.
+    # 한국어는 토큰 소모가 커 상한이 낮으면 도중에 잘린다. 기본 8000, env로 조정.
     max_tokens = int(os.getenv("RVP_EXPLAIN_MAX_TOKENS", "8000"))
-    agent = Agent(
-        model=OpenRouter(id=model_id, api_key=api_key, base_url=base, max_tokens=max_tokens),
-        instructions=[
-            "LSI 칩/펌웨어 불량 분석 시니어 엔지니어로서 한국어 마크다운으로 깊이 있게 답한다.",
-            "지시된 모든 섹션을 순서대로 빠짐없이 작성한다(특히 권장 해결 단계·우회책 누락 금지).",
-            "제공된 '과거 해결 사례'만 근거로 사용하고, 근거 키는 (LSI-49)처럼 본문에 인라인 인용한다.",
-            "표면적 요약이 아니라 메커니즘 수준의 인과와 검증 방법까지 제시한다.",
-            "한자/CJK 한자 금지 — 한글/영문/숫자/문장부호만.",
-        ],
-        markdown=True, telemetry=False, **kw)
-    for ev in agent.run(input=prompt, stream=True):
-        # reasoning 단계는 스트리밍하지 않고 최종 답(RunContent)만 전송
-        if isinstance(ev, RunContentEvent) and isinstance(ev.content, str) and ev.content:
-            yield ev.content
+    sys_msg = (
+        "LSI 칩/펌웨어 불량 분석 시니어 엔지니어로서 한국어 마크다운으로 깊이 있게 답한다. "
+        "지시된 모든 섹션을 순서대로 빠짐없이 작성한다(특히 권장 해결 단계·우회책 누락 금지). "
+        "제공된 '과거 해결 사례'만 근거로 사용하고, 근거 키는 (LSI-49)처럼 본문에 인라인 인용한다. "
+        "표면적 요약이 아니라 메커니즘 수준의 인과와 검증 방법까지 제시한다. "
+        "한자/CJK 한자 금지 — 한글/영문/숫자/문장부호만."
+    )
+    payload = {
+        "model": model_id, "max_tokens": max_tokens, "stream": True,
+        "messages": [{"role": "system", "content": sys_msg},
+                     {"role": "user", "content": prompt}],
+    }
+    req = urllib.request.Request(
+        base.rstrip("/") + "/chat/completions",
+        data=json.dumps(payload).encode("utf-8"),
+        headers={"Authorization": "Bearer " + api_key, "Content-Type": "application/json"})
+    with urllib.request.urlopen(req, timeout=180) as resp:
+        for raw in resp:
+            line = raw.decode("utf-8").strip()
+            if not line.startswith("data: "):
+                continue
+            data = line[6:]
+            if data == "[DONE]":
+                break
+            try:
+                ev = json.loads(data)
+            except Exception:
+                continue
+            piece = ev.get("choices", [{}])[0].get("delta", {}).get("content")
+            if piece:
+                yield piece
 
 
 @app.get("/recommend/explain/stream")
@@ -551,7 +565,7 @@ def explain_stream(key: Optional[str] = None, summary: str = "", symptom: str = 
                 acc.append(text)
                 yield f"data: {json.dumps({'type': 'delta', 'text': text}, ensure_ascii=False)}\n\n"
             else:
-                for delta in _agno_stream(prompt, reasoning=reasoning):
+                for delta in _llm_stream(prompt, reasoning=reasoning):
                     acc.append(delta)
                     yield f"data: {json.dumps({'type': 'delta', 'text': delta}, ensure_ascii=False)}\n\n"
             full = "".join(acc)
