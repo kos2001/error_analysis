@@ -29,8 +29,13 @@ DB_DIR = ROOT / "tmp_db"
 DB_DIR.mkdir(exist_ok=True)
 SESSIONS_FILE = DB_DIR / "hermes_sessions.json"
 
-HERMES_BIN = os.path.expanduser(os.getenv("HERMES_BIN") or shutil.which("hermes") or str(
-    Path.home() / ".local" / "bin" / "hermes"))
+def _resolve_bin() -> str:
+    """HERMES_BIN을 호출 시점에 해석 — 온보딩에서 프로필 설정 시 재시작 없이 반영."""
+    return os.path.expanduser(os.getenv("HERMES_BIN") or shutil.which("hermes") or str(
+        Path.home() / ".local" / "bin" / "hermes"))
+
+
+HERMES_BIN = _resolve_bin()  # 호환용 기본값(현재 env 기준)
 HERMES_MODEL = os.getenv("HERMES_MODEL", "")
 HERMES_TIMEOUT = int(os.getenv("HERMES_TIMEOUT", "300"))
 # hermes toolset 활성화 (예: "web", "web,file", "debugging"). 빈 값 = 도구 비활성화(순수 생성).
@@ -70,7 +75,7 @@ def _invoke(prompt: str, resume: str | None = None) -> tuple[str, str]:
 
     답변은 stdout, ``session_id: <id>`` 라인은 stderr로 출력된다.
     """
-    cmd = [HERMES_BIN, "chat", "-q", prompt, "-Q", "--cli", "-t", HERMES_TOOLSETS]
+    cmd = [_resolve_bin(), "chat", "-q", prompt, "-Q", "--cli", "-t", HERMES_TOOLSETS]
     if HERMES_MODEL:
         cmd += ["-m", HERMES_MODEL]
     if resume:
