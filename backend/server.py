@@ -59,6 +59,15 @@ def _reco_state() -> dict:
     records = [parse_issue(r) for r in raw]
     resolved = [r for r in records if r["status"] == RESOLVED_STATUS]
     unresolved = [r for r in records if r["status"] != RESOLVED_STATUS]
+    # KB 환류: 사람이 승인·수정한 RCA를 큐레이션 KB로 추가(같은 클래스 검색·제안 개선)
+    try:
+        import rca_feedback
+        curated = rca_feedback.kb_records()
+        if curated:
+            resolved = resolved + curated
+            records = records + curated
+    except Exception:
+        pass
     _RECO_STATE.update({
         "records": records,
         "by_key": {r["key"]: r for r in records},
@@ -446,6 +455,20 @@ def _explain_prompt_md(query_rec: dict, match_recs: list[dict]) -> str:
     cases = "\n\n".join(_case_block(r) for r in match_recs)
     q = query_rec
     q_extra = f"\n진행 단서(조사/트리아지): {q.get('investigation','')}" if (q.get("investigation") or "").strip() else ""
+    # 성능 개선 루프: 사람이 검토·수정한 과거 분석을 문체/수준 가이드(few-shot)로 주입
+    fewshot = ""
+    try:
+        import rca_feedback
+        # 같은 고장 클래스(동일 템플릿/분류)의 사람 수정만 — 무관 이슈 예시 주입 방지
+        ex = rca_feedback.relevant_edits(category=q.get("category", ""),
+                                         template=template_key(q.get("summary", "")),
+                                         n=2, max_len=450)
+        if ex:
+            blocks = "\n\n".join(f"[{e['key']}] {e['summary'][:50]}\n{e['final_body']}" for e in ex)
+            fewshot = ("\n\n## 같은 유형에서 사람이 검토·수정한 분석 예시 (문체·정정 방향 참고, 내용 복붙 금지)\n"
+                       + blocks + "\n")
+    except Exception:
+        pass
     return (
         "당신은 LSI 칩/펌웨어 불량 분석 시니어 엔지니어입니다. 제공된 '과거 해결 사례'만 근거로 "
         "아래 미해결 이슈를 깊이 있게 분석하세요. 다음 섹션을 순서대로 **모두 빠짐없이** 한국어 마크다운으로 작성합니다:\n"
@@ -459,7 +482,7 @@ def _explain_prompt_md(query_rec: dict, match_recs: list[dict]) -> str:
         "각 핵심 주장 옆에 근거 사례 키를 (LSI-49)처럼 인라인 인용하세요(제공된 키만, 창작 금지). 한자/CJK 한자 금지.\n\n"
         f"## 미해결 이슈\n{q.get('summary','')}\n증상: {q.get('symptom','')}\n"
         f"칩: {q.get('chip','')} / 분류: {q.get('category','')}{q_extra}\n\n"
-        f"## 과거 해결 사례\n{cases}\n")
+        f"## 과거 해결 사례\n{cases}\n{fewshot}")
 
 
 def _agno_stream(prompt: str, reasoning: bool = False):
@@ -626,6 +649,46 @@ def rca_draft(req: KeyBody):
         # 신뢰도 낮거나 미검증 근거면 반드시 사람 검토(조건부 HITL)
         "needs_review": (conf < 0.8) or (not verified),
         "based_on": p.get("based_on", ""),
+        "source": "proposal",
+        "created_at": _dt.datetime.now().isoformat(timespec="seconds"),
+        "state": "pending",
+    }
+    return {"item": rca_queue.upsert(item), "counts": rca_queue.counts()}
+
+
+class AnalysisDraftBody(BaseModel):
+    key: str
+    analysis_md: str            # 화면에 표시된 시니어 종합 분석(마크다운)
+    citations: list[str] = []   # 검증된 인용 키
+
+
+@app.post("/rca/draft-from-analysis")
+def rca_draft_from_analysis(req: AnalysisDraftBody):
+    """시니어 종합 분석(LLM)을 RCA 댓글 본문으로 → 승인 큐. 생성물이라 항상 검토 필요."""
+    import datetime as _dt
+    import re
+    import rca_queue
+    st = _reco_state()
+    rec = st["by_key"].get(req.key)
+    if not rec:
+        return {"error": f"이슈 {req.key} 없음"}
+    if rec.get("status") == RESOLVED_STATUS:
+        return {"error": "이미 해결된 이슈입니다(미해결 이슈만 대상)."}
+    if not (req.analysis_md or "").strip():
+        return {"error": "분석 본문이 비어 있습니다. 먼저 시니어 종합 분석을 생성하세요."}
+    # 인용 검증: 본문/전달 키 ∩ KB 키 (환각 차단)
+    valid = set(st["by_key"].keys())
+    cited = sorted({k for k in (set(req.citations) | set(re.findall(r"LSI-\d+", req.analysis_md)))} & valid)
+    cited_str = ", ".join(cited) if cited else "없음"
+    body = (
+        f"🤖 *{BOT_MARKER}* (RCA-bot | 시니어 종합 분석(LLM) | 근거: {cited_str})\n\n"
+        f"{req.analysis_md.strip()}\n\n"
+        f"_과거 해결 이슈 기반 LLM 종합 분석 (사람 승인 후 게시됨)._")
+    item = {
+        "key": req.key, "summary": rec.get("summary", ""), "status": rec.get("status", ""),
+        "body": body, "confidence": None, "based_on_verified": False,
+        "needs_review": True,  # LLM 생성물 → 항상 사람 검토
+        "based_on": cited_str, "source": "analysis",
         "created_at": _dt.datetime.now().isoformat(timespec="seconds"),
         "state": "pending",
     }
@@ -638,22 +701,48 @@ def rca_pending():
     return {"items": rca_queue.items("pending"), "counts": rca_queue.counts()}
 
 
+class ApproveBody(BaseModel):
+    key: str
+    body: Optional[str] = None   # 사람이 수정한 본문(있으면 이걸 게시·기록)
+
+
 @app.post("/rca/approve")
-def rca_approve(req: KeyBody):
-    """HITL 게이트 — 사람 승인 시에만 Jira에 게시(부작용 발생 지점)."""
+def rca_approve(req: ApproveBody):
+    """HITL 게이트 — 사람 승인(+수정) 시에만 Jira에 게시. 수정 내용은 피드백에 기록."""
+    import datetime as _dt
     import rca_queue
+    import rca_feedback
     item = rca_queue.get(req.key)
     if not item:
         return {"error": "큐에 없음"}
     if item.get("state") == "approved":
         return {"ok": True, "already": True, "item": item}
+    original = item.get("body", "")
+    final = (req.body if (req.body and req.body.strip()) else original)
     try:
         from jira_commenter import post_comment
-        res = post_comment(req.key, item["body"])
-        updated = rca_queue.set_state(req.key, "approved", comment_id=str(res.get("id", "")))
-        return {"ok": True, "item": updated, "counts": rca_queue.counts()}
+        res = post_comment(req.key, final)
+        now = _dt.datetime.now().isoformat(timespec="seconds")
+        updated = rca_queue.set_state(req.key, "approved", comment_id=str(res.get("id", "")),
+                                      final_body=final, edited=(original.strip() != final.strip()))
+        # 사람 수정 피드백 저장(성능 개선용) — 클래스 매칭을 위해 분류/템플릿 동봉
+        rec = _reco_state()["by_key"].get(req.key, {})
+        rca_feedback.record(req.key, item.get("summary", ""), item.get("source", ""),
+                            original, final, item.get("based_on", ""), now,
+                            category=rec.get("category", ""),
+                            template=template_key(item.get("summary", "")),
+                            symptom=rec.get("symptom", ""), chip=rec.get("chip", ""))
+        _RECO_STATE.clear()  # KB 환류 반영 — 다음 요청 시 큐레이션 항목 포함해 재빌드
+        return {"ok": True, "item": updated, "edited": original.strip() != final.strip(),
+                "counts": rca_queue.counts(), "feedback": rca_feedback.stats()}
     except Exception as e:
         return {"ok": False, "error": str(e)[:200]}
+
+
+@app.get("/rca/feedback")
+def rca_feedback_stats():
+    import rca_feedback
+    return {"stats": rca_feedback.stats(), "recent_edits": rca_feedback.recent_edits(5)}
 
 
 @app.post("/rca/reject")
