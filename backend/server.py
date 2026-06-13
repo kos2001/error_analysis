@@ -24,6 +24,10 @@ from pydantic import BaseModel
 from lang_validator import validate_and_fix  # noqa: E402
 from preprocess import parse_issue  # noqa: E402
 from recommender import Recommender, template_key  # noqa: E402
+import app_config  # noqa: E402
+
+# 저장된 온보딩 설정(Hermes Gateway/Jira)을 env에 주입 — 서버 기동 시 1회.
+app_config.load_into_env()
 
 # LLM 설명 생성 엔진 선택: agno(OpenRouter) | hermes(Hermes Agent CLI)
 ENGINE = os.getenv("RVP_ENGINE", "agno").lower()
@@ -82,6 +86,147 @@ app.add_middleware(
 @app.get("/health")
 def health():
     return {"ok": True}
+
+
+# ---------------------------------------------------------------------------
+# 설정 온보딩 (Hermes Gateway / Jira) — 미설정 시 프론트가 강제 진입
+# ---------------------------------------------------------------------------
+class ConfigBody(BaseModel):
+    jira: Optional[dict] = None       # {base_url, project_key, email, api_token, pat}
+    hermes: Optional[dict] = None     # {gateway_url, api_key, model}
+
+
+@app.get("/config/status")
+def config_status():
+    return app_config.status()
+
+
+@app.post("/config")
+def config_save(body: ConfigBody):
+    st = app_config.save(body.jira, body.hermes)
+    _RECO_STATE.clear()  # Jira 변경 반영 위해 KB 캐시 무효화
+    return st
+
+
+@app.post("/config/test/jira")
+def config_test_jira(body: ConfigBody):
+    import requests
+    j = body.jira or {}
+    base = (j.get("base_url") or os.getenv("JIRA_BASE_URL", "")).rstrip("/")
+    project = j.get("project_key") or os.getenv("JIRA_PROJECT_KEY", "")
+    if not base or not project:
+        return {"ok": False, "error": "base_url 과 project_key 가 필요합니다."}
+    s = requests.Session()
+    pat = j.get("pat") or os.getenv("JIRA_PAT")
+    if pat:
+        s.headers["Authorization"] = f"Bearer {pat}"
+    else:
+        email = j.get("email") or os.getenv("JIRA_EMAIL")
+        token = j.get("api_token") or os.getenv("JIRA_API_TOKEN")
+        if not (email and token):
+            return {"ok": False, "error": "인증 정보 부족: PAT 또는 (email + API token)"}
+        s.auth = (email, token)
+    try:
+        r = s.get(f"{base}/rest/api/2/myself", timeout=15)
+        r.raise_for_status()
+        me = r.json().get("displayName") or r.json().get("name")
+        rp = s.get(f"{base}/rest/api/2/project/{project}", timeout=15)
+        rp.raise_for_status()
+        return {"ok": True, "user": me, "project": rp.json().get("name")}
+    except Exception as e:
+        return {"ok": False, "error": str(e)[:200]}
+
+
+@app.post("/config/test/hermes")
+def config_test_hermes(body: ConfigBody):
+    import requests
+    h = body.hermes or {}
+    base = (h.get("gateway_url") or os.getenv("OPENROUTER_BASE_URL", "https://openrouter.ai/api/v1")).rstrip("/")
+    key = h.get("api_key") or os.getenv("OPENROUTER_API_KEY")
+    if not key:
+        return {"ok": False, "error": "API key 가 필요합니다."}
+    try:
+        r = requests.get(f"{base}/models", headers={"Authorization": f"Bearer {key}"}, timeout=15)
+        r.raise_for_status()
+        n = len(r.json().get("data", []))
+        return {"ok": True, "models": n}
+    except Exception as e:
+        return {"ok": False, "error": str(e)[:200]}
+
+
+# --- Hermes Agent(CLI 프로필) 설정 처리 — 미설정 감지 + 자동 등록/안내 ---
+HERMES_PROFILE = "lsi"
+
+
+def _hermes_base_bin() -> str:
+    import shutil
+    return shutil.which("hermes") or os.path.expanduser("~/.local/bin/hermes")
+
+
+def _hermes_probe() -> dict:
+    """hermes agent 셋업 상태 점검 — 온보딩 체크리스트용."""
+    import subprocess
+    base = _hermes_base_bin()
+    installed = os.path.exists(base)
+    prof_dir = Path(os.path.expanduser(f"~/.hermes/profiles/{HERMES_PROFILE}"))
+    profile_exists = prof_dir.exists()
+    has_key, model = False, ""
+    if installed:
+        try:
+            args = [base] + (["-p", HERMES_PROFILE] if profile_exists else []) + ["status"]
+            out = subprocess.run(args, capture_output=True, text=True, timeout=20).stdout
+            for line in out.splitlines():
+                s = line.strip()
+                if s.startswith("Model:"):
+                    model = s.split(":", 1)[1].strip()
+                if "✓" in s and any(p in s for p in ("OpenRouter", "OpenAI", "Gemini", "Google", "Anthropic")):
+                    has_key = True
+        except Exception:
+            pass
+    steps = [
+        {"key": "install", "label": "hermes CLI 설치", "done": installed, "auto": False,
+         "hint": "pipx install hermes-agent  (또는 pip install hermes-agent)"},
+        {"key": "auth", "label": "제공자 인증 / API 키", "done": has_key, "auto": False,
+         "hint": "hermes login  또는  hermes setup  (브라우저 OAuth 또는 키 입력)"},
+        {"key": "profile", "label": f"'{HERMES_PROFILE}' 프로필(agent) 등록", "done": profile_exists, "auto": True,
+         "hint": f"hermes profile create {HERMES_PROFILE} --clone"},
+    ]
+    return {"installed": installed, "bin": base, "profile_exists": profile_exists,
+            "has_key": has_key, "model": model,
+            "ready": installed and profile_exists and has_key, "steps": steps}
+
+
+@app.get("/config/hermes/probe")
+def hermes_probe():
+    return _hermes_probe()
+
+
+@app.post("/config/hermes/ensure-profile")
+def hermes_ensure_profile():
+    """자동화 가능한 단계 처리: 'lsi' 프로필이 없으면 생성(clone) + HERMES_BIN 연결."""
+    import subprocess
+    base = _hermes_base_bin()
+    if not os.path.exists(base):
+        return {"ok": False, "error": "hermes CLI가 설치되어 있지 않습니다. 먼저 설치하세요.",
+                "probe": _hermes_probe()}
+    prof_dir = Path(os.path.expanduser(f"~/.hermes/profiles/{HERMES_PROFILE}"))
+    created = False
+    if not prof_dir.exists():
+        r = subprocess.run(
+            [base, "profile", "create", HERMES_PROFILE, "--clone", "--description",
+             "LSI 불량 분석 어시스턴트: 과거 해결 이슈 기반 근본원인·해결책 추천 + Jira RCA 댓글"],
+            capture_output=True, text=True, timeout=90)
+        created = r.returncode == 0
+        if not created:
+            return {"ok": False, "error": (r.stderr or r.stdout).strip()[:300],
+                    "probe": _hermes_probe()}
+    # 앱이 등록된 프로필로 LLM을 호출하도록 HERMES_BIN(래퍼) 영속화
+    wrapper = os.path.expanduser(f"~/.local/bin/{HERMES_PROFILE}")
+    if os.path.exists(wrapper):
+        app_config.set_env("HERMES_BIN", wrapper)
+    return {"ok": True, "created": created,
+            "hermes_bin": wrapper if os.path.exists(wrapper) else base,
+            "probe": _hermes_probe()}
 
 
 # ---------------------------------------------------------------------------
