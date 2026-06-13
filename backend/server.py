@@ -59,10 +59,18 @@ def _reco_state() -> dict:
     records = [parse_issue(r) for r in raw]
     resolved = [r for r in records if r["status"] == RESOLVED_STATUS]
     unresolved = [r for r in records if r["status"] != RESOLVED_STATUS]
-    # KB 환류: 사람이 승인·수정한 RCA를 큐레이션 KB로 추가(같은 클래스 검색·제안 개선)
+    # KB 환류: 사람이 승인·수정한 RCA를 큐레이션 KB로 추가(같은 클래스 검색·제안 개선).
+    # 1순위는 영속 저장소(data/knowledge_store.json, git 추적), rca_feedback는 폴백.
+    # 동일 key는 영속 저장소 우선으로 dedupe.
     try:
+        import knowledge_store
         import rca_feedback
-        curated = rca_feedback.kb_records()
+        curated, seen = [], set()
+        for r in knowledge_store.kb_records() + rca_feedback.kb_records():
+            if r["key"] in seen:
+                continue
+            seen.add(r["key"])
+            curated.append(r)
         if curated:
             resolved = resolved + curated
             records = records + curated
@@ -765,6 +773,7 @@ def rca_approve(req: ApproveBody):
     import datetime as _dt
     import rca_queue
     import rca_feedback
+    import knowledge_store
     item = rca_queue.get(req.key)
     if not item:
         return {"error": "큐에 없음"}
@@ -776,18 +785,32 @@ def rca_approve(req: ApproveBody):
         from jira_commenter import post_comment
         res = post_comment(req.key, _md_to_jira(final))  # 게시 직전 Jira wiki로 변환
         now = _dt.datetime.now().isoformat(timespec="seconds")
-        updated = rca_queue.set_state(req.key, "approved", comment_id=str(res.get("id", "")),
+        comment_id = str(res.get("id", ""))
+        updated = rca_queue.set_state(req.key, "approved", comment_id=comment_id,
                                       final_body=final, edited=(original.strip() != final.strip()))
         # 사람 수정 피드백 저장(성능 개선용) — 클래스 매칭을 위해 분류/템플릿 동봉
         rec = _reco_state()["by_key"].get(req.key, {})
+        cited = sorted(set(re.findall(r"LSI-\d+", final)))
         rca_feedback.record(req.key, item.get("summary", ""), item.get("source", ""),
                             original, final, item.get("based_on", ""), now,
                             category=rec.get("category", ""),
                             template=template_key(item.get("summary", "")),
                             symptom=rec.get("symptom", ""), chip=rec.get("chip", ""))
+        # 영속화: 큐레이션 지식을 git 추적 저장소에 적재(버전·백업·공유). 실패해도 게시는 유효.
+        persisted = None
+        try:
+            persisted = knowledge_store.upsert(
+                req.key, item.get("summary", ""), final,
+                comment_id=comment_id, citations=cited,
+                category=rec.get("category", ""), template=template_key(item.get("summary", "")),
+                symptom=rec.get("symptom", ""), chip=rec.get("chip", ""),
+                author=os.getenv("JIRA_EMAIL", ""), approved_at=now)
+        except Exception:
+            pass
         _RECO_STATE.clear()  # KB 환류 반영 — 다음 요청 시 큐레이션 항목 포함해 재빌드
         return {"ok": True, "item": updated, "edited": original.strip() != final.strip(),
-                "counts": rca_queue.counts(), "feedback": rca_feedback.stats()}
+                "counts": rca_queue.counts(), "feedback": rca_feedback.stats(),
+                "persisted": bool(persisted), "knowledge": knowledge_store.stats()}
     except Exception as e:
         return {"ok": False, "error": str(e)[:200]}
 
@@ -796,6 +819,39 @@ def rca_approve(req: ApproveBody):
 def rca_feedback_stats():
     import rca_feedback
     return {"stats": rca_feedback.stats(), "recent_edits": rca_feedback.recent_edits(5)}
+
+
+# ---------------------------------------------------------------------------
+# 지식 자산 영속화·환류 (P1-1)
+# ---------------------------------------------------------------------------
+@app.get("/knowledge/stats")
+def knowledge_stats():
+    """영속 큐레이션 지식 저장소 현황(건수·출처·저장 경로)."""
+    import knowledge_store
+    return {"knowledge": knowledge_store.stats()}
+
+
+@app.post("/reco/reload")
+def reco_reload():
+    """추천 KB 캐시 무효화 — 새 큐레이션 지식을 서버 재시작 없이 즉시 반영."""
+    _RECO_STATE.clear()
+    st = _reco_state()
+    return {"ok": True, "kb_size": len(st["resolved"]), "by_key": len(st["by_key"])}
+
+
+@app.post("/knowledge/rebuild-from-jira")
+def knowledge_rebuild_from_jira():
+    """재해 복구/머신 간 동기화 — Jira 봇 댓글(조직 SoT)에서 지식 자산을 재구성한다.
+
+    로컬 data/knowledge_store.json 유실 시에도 Jira에서 큐레이션 지식을 복원.
+    """
+    import knowledge_store
+    try:
+        out = knowledge_store.rebuild_from_jira(BOT_MARKER)
+        _RECO_STATE.clear()  # 복원된 지식 즉시 반영
+        return {"ok": True, **out}
+    except Exception as e:
+        return {"ok": False, "error": str(e)[:200]}
 
 
 @app.post("/rca/reject")
