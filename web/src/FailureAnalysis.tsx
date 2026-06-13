@@ -426,11 +426,14 @@ export default function FailureAnalysis({ onQueueChange }: { onQueueChange?: () 
                         </div>
                         <div className="space-y-3 text-sm">
                           <div><span className="font-semibold text-red-600">🔍 예상 근본원인</span>
-                            <p className="mt-1 text-slate-700">{reco.proposal.root_cause}</p></div>
+                            <div className="mt-1 prose prose-sm max-w-none text-slate-700 prose-p:my-1 prose-li:my-0.5 prose-ol:my-1 prose-ul:my-1">
+                              <ReactMarkdown remarkPlugins={[remarkGfm]}>{reco.proposal.root_cause || "—"}</ReactMarkdown></div></div>
                           <div><span className="font-semibold text-emerald-600">✅ 권장 해결책</span>
-                            <p className="mt-1 text-slate-700">{reco.proposal.resolution}</p></div>
+                            <div className="mt-1 prose prose-sm max-w-none text-slate-700 prose-p:my-1 prose-li:my-0.5 prose-ol:my-1 prose-ul:my-1">
+                              <ReactMarkdown remarkPlugins={[remarkGfm]}>{reco.proposal.resolution || "—"}</ReactMarkdown></div></div>
                           <div><span className="font-semibold text-slate-500">↪ 임시 우회책</span>
-                            <p className="mt-1 text-slate-600">{reco.proposal.workaround || "—"}</p></div>
+                            <div className="mt-1 prose prose-sm max-w-none text-slate-600 prose-p:my-1 prose-li:my-0.5 prose-ol:my-1 prose-ul:my-1">
+                              <ReactMarkdown remarkPlugins={[remarkGfm]}>{reco.proposal.workaround || "—"}</ReactMarkdown></div></div>
                         </div>
                         <div className="mt-4 flex items-center gap-2 flex-wrap">
                           <button onClick={explain} disabled={explaining}
