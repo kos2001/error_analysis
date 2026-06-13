@@ -59,6 +59,14 @@ def _reco_state() -> dict:
     records = [parse_issue(r) for r in raw]
     resolved = [r for r in records if r["status"] == RESOLVED_STATUS]
     unresolved = [r for r in records if r["status"] != RESOLVED_STATUS]
+    # 인입 품질 게이트(P1-2): 무음 추출 실패를 서빙 시점에 표면화(차단 아님, 경고).
+    try:
+        import quality_gate
+        _q = quality_gate.validate(records, resolved_status=RESOLVED_STATUS)
+        if not _q["ok"]:
+            print("[server] ⚠ KB 품질 경고: " + " / ".join(_q["violations"]))
+    except Exception:
+        pass
     # KB 환류: 사람이 승인·수정한 RCA를 큐레이션 KB로 추가(같은 클래스 검색·제안 개선).
     # 1순위는 영속 저장소(data/knowledge_store.json, git 추적), rca_feedback는 폴백.
     # 동일 key는 영속 저장소 우선으로 dedupe.
@@ -829,6 +837,16 @@ def knowledge_stats():
     """영속 큐레이션 지식 저장소 현황(건수·출처·저장 경로)."""
     import knowledge_store
     return {"knowledge": knowledge_store.stats()}
+
+
+@app.get("/knowledge/quality")
+def knowledge_quality():
+    """인입 KB 품질 리포트(P1-2) — 상태별 필드 충족률 + 무음 실패 의심 키."""
+    import quality_gate
+    st = _reco_state()
+    # 큐레이션(-rca) 항목 제외하고 원본 인입 KB만 평가
+    base = [r for r in st["records"] if not r.get("curated")]
+    return quality_gate.validate(base, resolved_status=RESOLVED_STATUS)
 
 
 @app.post("/reco/reload")
