@@ -15,7 +15,8 @@ export default function RcaQueue({ onBack, onChange }: { onBack: () => void; onC
   const [busy, setBusy] = useState<string>("");
   const [msg, setMsg] = useState<{ key: string; ok: boolean; text: string } | null>(null);
   const [edits, setEdits] = useState<Record<string, string>>({});   // key → 수정 본문
-  const [editing, setEditing] = useState<string>("");                // 현재 편집 중 key
+  const [editing, setEditing] = useState<string>("");                // 본문 패널 열린 key
+  const [panelTab, setPanelTab] = useState<Record<string, "edit" | "preview">>({}); // 편집/미리보기
   const [valid, setValid] = useState<Record<string, any>>({});       // key → 검증 결과
   const [validating, setValidating] = useState<string>("");
 
@@ -59,7 +60,7 @@ export default function RcaQueue({ onBack, onChange }: { onBack: () => void; onC
     <div className="h-full overflow-y-auto bg-slate-100">
       <div className="max-w-3xl mx-auto p-6">
         <div className="flex items-center gap-3 mb-1">
-          <button onClick={onBack} className="text-sm text-slate-500 hover:text-indigo-600">← 분석으로</button>
+          <button onClick={onBack} className="text-sm text-slate-500 hover:text-indigo-600">← 홈(분석 화면)</button>
           <h1 className="text-xl font-bold text-slate-800">📤 RCA 댓글 승인 대기 (HITL)</h1>
         </div>
         <p className="text-sm text-slate-500 mb-5">사람이 승인할 때만 Jira에 게시됩니다. 거부하면 게시되지 않습니다.</p>
@@ -85,21 +86,40 @@ export default function RcaQueue({ onBack, onChange }: { onBack: () => void; onC
                 </div>
                 <div className="text-sm font-medium leading-snug mb-2">{it.summary}</div>
                 <div className="flex items-center gap-2 mb-1">
-                  <button onClick={() => { setEditing(editing === it.key ? "" : it.key); if (!(it.key in edits)) setEdits((e) => ({ ...e, [it.key]: it.body })); }}
-                    className="text-[11px] text-slate-500 hover:text-indigo-600">{editing === it.key ? "▾ 미리보기로" : "✏️ 게시 전 수정"}</button>
-                  {isEdited(it) && <span className="text-[11px] text-amber-600">● 수정됨 (수정본이 게시·저장됩니다)</span>}
+                  <button onClick={() => {
+                    const open = editing === it.key;
+                    setEditing(open ? "" : it.key);
+                    if (!open) {
+                      if (!(it.key in edits)) setEdits((e) => ({ ...e, [it.key]: it.body }));
+                      if (!(it.key in panelTab)) setPanelTab((t) => ({ ...t, [it.key]: "preview" }));
+                    }
+                  }}
+                    className="text-[11px] text-slate-500 hover:text-indigo-600">
+                    {editing === it.key ? "▾ 본문 닫기" : "📝 게시 본문 미리보기·수정"}{isEdited(it) ? " (수정됨)" : ""}
+                  </button>
+                  {isEdited(it) && <span className="text-[11px] text-amber-600">● 수정본이 게시·저장됩니다</span>}
                 </div>
-                {editing === it.key ? (
-                  <textarea value={bodyOf(it)} onChange={(e) => setEdits((s) => ({ ...s, [it.key]: e.target.value }))}
-                    rows={12}
-                    className="w-full text-xs font-mono p-3 rounded border border-indigo-300 focus:outline-none focus:ring-1 focus:ring-indigo-400" />
-                ) : (
-                  <details className="text-xs text-slate-600">
-                    <summary className="cursor-pointer text-slate-500 hover:text-indigo-600">게시 본문 미리보기{isEdited(it) ? " (수정본)" : ""}</summary>
-                    <div className="mt-2 p-3 bg-slate-50 rounded border border-slate-200 prose prose-sm max-w-none whitespace-pre-wrap">
-                      <ReactMarkdown remarkPlugins={[remarkGfm]}>{bodyOf(it)}</ReactMarkdown>
+                {editing === it.key && (
+                  <div className="border border-slate-200 rounded-lg overflow-hidden">
+                    <div className="flex items-center text-[11px] border-b border-slate-200 bg-slate-50">
+                      {(["preview", "edit"] as const).map((t) => (
+                        <button key={t} onClick={() => setPanelTab((s) => ({ ...s, [it.key]: t }))}
+                          className={`px-3 py-1.5 ${(panelTab[it.key] ?? "preview") === t ? "bg-white text-indigo-600 font-semibold border-b-2 border-indigo-500" : "text-slate-500 hover:text-indigo-600"}`}>
+                          {t === "preview" ? "👁 미리보기" : "✏️ 편집"}
+                        </button>
+                      ))}
+                      <span className="ml-auto px-2 text-[10px] text-slate-400">Markdown</span>
                     </div>
-                  </details>
+                    {(panelTab[it.key] ?? "preview") === "edit" ? (
+                      <textarea value={bodyOf(it)} onChange={(e) => setEdits((s) => ({ ...s, [it.key]: e.target.value }))}
+                        rows={14} spellCheck={false}
+                        className="w-full text-xs font-mono p-3 focus:outline-none resize-y bg-white" />
+                    ) : (
+                      <div className="p-3 bg-white prose prose-sm max-w-none max-h-96 overflow-y-auto">
+                        <ReactMarkdown remarkPlugins={[remarkGfm]}>{bodyOf(it)}</ReactMarkdown>
+                      </div>
+                    )}
+                  </div>
                 )}
                 {valid[it.key] && (
                   <div className="mt-2 text-[11px] bg-slate-50 border border-slate-200 rounded p-2 space-y-0.5">
