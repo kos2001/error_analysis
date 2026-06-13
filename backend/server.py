@@ -286,6 +286,40 @@ def reco_stats():
     }
 
 
+class RecoFeedbackBody(BaseModel):
+    query_key: str = ""
+    query_summary: str = ""
+    match_key: str
+    rating: str                       # "helpful" | "not_helpful"
+    is_actual_root_cause: bool = False
+    match_rank: Optional[int] = None
+    match_score: Optional[float] = None
+    note: str = ""
+
+
+@app.post("/reco/feedback")
+def reco_feedback(req: RecoFeedbackBody):
+    """추천 유용성/결과 피드백 기록(P1-3) — 도움됨·아님, 실제 근본원인 여부."""
+    import reco_feedback
+    try:
+        ev = reco_feedback.record(
+            query_key=req.query_key, match_key=req.match_key, rating=req.rating,
+            query_summary=req.query_summary,
+            query_template=template_key(req.query_summary) if req.query_summary else "",
+            is_actual_root_cause=req.is_actual_root_cause,
+            match_rank=req.match_rank, match_score=req.match_score, note=req.note)
+        return {"ok": True, "event": ev, "stats": reco_feedback.stats()}
+    except ValueError as e:
+        return {"ok": False, "error": str(e)}
+
+
+@app.get("/reco/feedback/stats")
+def reco_feedback_stats():
+    """유용성 집계 + ROI 프록시 + 실전형 평가셋 정답 쌍."""
+    import reco_feedback
+    return {"stats": reco_feedback.stats(), "eval_pairs": reco_feedback.eval_pairs()}
+
+
 @app.get("/issues/unresolved")
 def unresolved_issues():
     st = _reco_state()

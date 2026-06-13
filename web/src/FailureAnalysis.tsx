@@ -267,6 +267,26 @@ export default function FailureAnalysis({ onQueueChange }: { onQueueChange?: () 
     } catch (e: any) { setDraftAnMsg(`⚠ ${e.message}`); } finally { setDraftingAn(false); }
   };
 
+  // P1-3 추천 유용성 피드백 — 매치별 도움됨/아님 + 실제 근본원인 라벨 수집
+  const [fb, setFb] = useState<Record<string, { rating?: "helpful" | "not_helpful"; actual?: boolean }>>({});
+  const sendFeedback = async (m: Match, rank: number,
+                              patch: { rating?: "helpful" | "not_helpful"; actual?: boolean }) => {
+    const cur = fb[m.key] ?? {};
+    const next = { ...cur, ...patch };
+    setFb((s) => ({ ...s, [m.key]: next }));               // 낙관적 갱신
+    if (!next.rating) return;                               // rating 없으면 전송 보류
+    try {
+      await fetch(`${API}/reco/feedback`, {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          query_key: sel?.key ?? "", query_summary: sel?.summary ?? reco?.query?.summary ?? "",
+          match_key: m.key, rating: next.rating, is_actual_root_cause: !!next.actual,
+          match_rank: rank, match_score: m.rerank_score ?? m.embed_cos ?? m.score,
+        }),
+      });
+    } catch { /* 피드백 실패는 조용히 무시(분석 흐름 방해 금지) */ }
+  };
+
   // Jira 번호(또는 그래프 노드 클릭) → 유사 사례 검색 + 에이전트(LLM) 종합 분석
   const goKey = async (raw: string) => {
     const t = raw.trim().toUpperCase();
@@ -487,7 +507,7 @@ export default function FailureAnalysis({ onQueueChange }: { onQueueChange?: () 
                     <section>
                       <h3 className="font-semibold text-slate-700 mb-3">유사 과거 해결 사례 {reco.matches.length}건</h3>
                       <div className="space-y-3">
-                        {reco.matches.map((m) => (
+                        {reco.matches.map((m, mi) => (
                           <div key={m.key} className="bg-white rounded-xl border border-slate-200 p-4">
                             <div className="flex items-center gap-2 mb-1">
                               <span className="font-mono text-xs text-indigo-600 font-semibold">{m.key}</span>
@@ -520,6 +540,26 @@ export default function FailureAnalysis({ onQueueChange }: { onQueueChange?: () 
                                 {m.workaround && <p><b className="text-slate-500">우회책:</b> {m.workaround}</p>}
                               </div>
                             </details>
+                            {/* P1-3 유용성 피드백 */}
+                            <div className="mt-2 pt-2 border-t border-slate-100 flex items-center gap-2 text-[11px]">
+                              <span className="text-slate-400">이 사례가</span>
+                              <button onClick={() => sendFeedback(m, mi + 1, { rating: "helpful" })}
+                                title="이 추천이 도움됨"
+                                className={`px-2 py-0.5 rounded-full border ${fb[m.key]?.rating === "helpful" ? "bg-emerald-50 border-emerald-300 text-emerald-700" : "border-slate-200 text-slate-500 hover:border-emerald-300"}`}>
+                                👍 도움됨
+                              </button>
+                              <button onClick={() => sendFeedback(m, mi + 1, { rating: "not_helpful" })}
+                                title="이 추천이 도움 안 됨"
+                                className={`px-2 py-0.5 rounded-full border ${fb[m.key]?.rating === "not_helpful" ? "bg-rose-50 border-rose-300 text-rose-700" : "border-slate-200 text-slate-500 hover:border-rose-300"}`}>
+                                👎 아님
+                              </button>
+                              <label className="ml-auto flex items-center gap-1 text-slate-500 cursor-pointer" title="이 사례가 실제 근본원인이었음(ROI·평가셋 정답)">
+                                <input type="checkbox" checked={!!fb[m.key]?.actual}
+                                  onChange={(e) => sendFeedback(m, mi + 1, { actual: e.target.checked, rating: fb[m.key]?.rating ?? "helpful" })}
+                                  className="accent-indigo-600" />
+                                실제 근본원인
+                              </label>
+                            </div>
                           </div>
                         ))}
                       </div>
