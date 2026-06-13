@@ -144,7 +144,7 @@ function Bar({ value }: { value: number }) {
   );
 }
 
-export default function FailureAnalysis() {
+export default function FailureAnalysis({ onQueueChange }: { onQueueChange?: () => void } = {}) {
   const [stats, setStats] = useState<any>(null);
   const [issues, setIssues] = useState<Issue[]>([]);
   const [q, setQ] = useState("");
@@ -213,19 +213,43 @@ export default function FailureAnalysis() {
     } finally { setLoading(false); }
   };
 
-  const runExplain = async (key: string) => {
+  // LLM 종합 분석을 SSE로 스트리밍 — 본문은 토큰 단위, 인용은 완료 시 검증본 반영
+  const runExplain = (key: string) => {
     setExplaining(true);
-    try {
-      const r = await fetch(`${API}/recommend`, {
-        method: "POST", headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ key, k: 4, explain: true }),
-      });
-      const d: RecoResp = await r.json();
-      setReco((prev) => (prev ? { ...prev, explanation: d.explanation, explanation_citations: d.explanation_citations, explanation_dropped_citations: d.explanation_dropped_citations } : d));
-    } finally { setExplaining(false); }
+    setReco((prev) => (prev ? { ...prev, explanation: "", explanation_citations: [], explanation_dropped_citations: [] } : prev));
+    const es = new EventSource(`${API}/recommend/explain/stream?key=${encodeURIComponent(key)}&k=4`);
+    const finish = () => { es.close(); setExplaining(false); };
+    es.onmessage = (e) => {
+      let d: any; try { d = JSON.parse(e.data); } catch { return; }
+      if (d.type === "delta") {
+        setReco((prev) => (prev ? { ...prev, explanation: (prev.explanation || "") + d.text } : prev));
+      } else if (d.type === "done") {
+        setReco((prev) => (prev ? { ...prev, explanation_citations: d.citations || [] } : prev));
+        finish();
+      } else if (d.type === "error") {
+        setReco((prev) => (prev ? { ...prev, explanation: (prev.explanation || "") + `\n\n_(생성 오류: ${d.message})_` } : prev));
+        finish();
+      }
+    };
+    es.onerror = finish;
   };
 
   const explain = () => { if (sel) runExplain(sel.key); };
+
+  // RCA 댓글 초안 → HITL 승인 대기 큐에 추가 (Jira 게시는 승인 시에만)
+  const [drafting, setDrafting] = useState(false);
+  const [draftMsg, setDraftMsg] = useState("");
+  const draftRca = async () => {
+    if (!sel) return;
+    setDrafting(true); setDraftMsg("");
+    try {
+      const d = await fetch(`${API}/rca/draft`, {
+        method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ key: sel.key }),
+      }).then((r) => r.json());
+      setDraftMsg(d.error ? `⚠ ${d.error}` : "✓ 승인 대기 큐에 추가됨 (상단 '📤 승인 대기'에서 검토·게시)");
+      if (!d.error) onQueueChange?.();
+    } catch (e: any) { setDraftMsg(`⚠ ${e.message}`); } finally { setDrafting(false); }
+  };
 
   // Jira 번호(또는 그래프 노드 클릭) → 유사 사례 검색 + 에이전트(LLM) 종합 분석
   const goKey = async (raw: string) => {
@@ -392,10 +416,20 @@ export default function FailureAnalysis() {
                           <div><span className="font-semibold text-slate-500">↪ 임시 우회책</span>
                             <p className="mt-1 text-slate-600">{reco.proposal.workaround || "—"}</p></div>
                         </div>
-                        <button onClick={explain} disabled={explaining}
-                          className="mt-4 text-sm px-4 py-2 rounded-lg bg-indigo-600 text-white hover:bg-indigo-700 disabled:opacity-50 transition">
-                          {explaining ? "시니어 종합 분석 생성 중…" : "✨ 시니어 종합 분석 생성 (LLM)"}
-                        </button>
+                        <div className="mt-4 flex items-center gap-2 flex-wrap">
+                          <button onClick={explain} disabled={explaining}
+                            className="text-sm px-4 py-2 rounded-lg bg-indigo-600 text-white hover:bg-indigo-700 disabled:opacity-50 transition">
+                            {explaining ? "시니어 종합 분석 생성 중…" : "✨ 시니어 종합 분석 생성 (LLM)"}
+                          </button>
+                          {sel && sel.status !== "완료" && (
+                            <button onClick={draftRca} disabled={drafting}
+                              title="RCA 댓글 초안을 만들어 승인 대기 큐에 추가 (게시는 승인 시에만)"
+                              className="text-sm px-4 py-2 rounded-lg border border-indigo-300 text-indigo-600 hover:bg-indigo-50 disabled:opacity-50 transition">
+                              {drafting ? "초안 생성 중…" : "🤖 RCA 댓글 초안 → 승인 대기"}
+                            </button>
+                          )}
+                        </div>
+                        {draftMsg && <div className="mt-2 text-xs text-slate-500">{draftMsg}</div>}
                       </section>
                     )}
 

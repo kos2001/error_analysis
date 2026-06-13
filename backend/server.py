@@ -19,6 +19,7 @@ sys.path.insert(0, str(ROOT / "src"))
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 
 from lang_validator import validate_and_fix  # noqa: E402
@@ -429,6 +430,114 @@ def _llm_explain(query_rec: dict, matches: list[dict]) -> dict:
     return {"markdown": md, "citations": cited, "dropped": dropped}
 
 
+def _case_block(r: dict) -> str:
+    """근거 사례를 풍부하게 직렬화 — 증상/디버깅 접근/근본원인/해결책/우회책."""
+    parts = [f"[{r.get('key','')}] {r.get('summary','')}"]
+    for label, field in (("증상", "symptom"), ("디버깅 접근", "debug_approach"),
+                         ("근본원인", "root_cause"), ("해결책", "resolution"), ("우회책", "workaround")):
+        v = (r.get(field) or "").strip()
+        if v:
+            parts.append(f"{label}: {v}")
+    return "\n".join(parts)
+
+
+def _explain_prompt_md(query_rec: dict, match_recs: list[dict]) -> str:
+    """스트리밍용 심화 분석 프롬프트 — 인과/사례종합/검증방법/재발방지/불확실성 + 인라인 인용."""
+    cases = "\n\n".join(_case_block(r) for r in match_recs)
+    q = query_rec
+    q_extra = f"\n진행 단서(조사/트리아지): {q.get('investigation','')}" if (q.get("investigation") or "").strip() else ""
+    return (
+        "당신은 LSI 칩/펌웨어 불량 분석 시니어 엔지니어입니다. 제공된 '과거 해결 사례'만 근거로 "
+        "아래 미해결 이슈를 깊이 있게 분석하세요. 다음 섹션을 순서대로 **모두 빠짐없이** 한국어 마크다운으로 작성합니다:\n"
+        "### 🎯 예상 근본원인\n"
+        "### 🔍 증상→원인 인과 분석  (관찰 증상이 어떤 메커니즘으로 해당 원인을 시사하는지 단계적으로)\n"
+        "### ✅ 권장 해결 단계  (번호가 있는 구체적 순서)\n"
+        "### ↪ 임시 우회책\n"
+        "### 🔬 근본원인 검증 방법  (어떤 신호·측정·재현 절차로 확인하는지 구체적으로)\n"
+        "### 🧩 사례 종합 / 재발 방지  (인용 사례의 공통 패턴·차이점 + 예방 포인트)\n"
+        "### ⚠ 불확실성·주의  (근거가 약하거나 사례와 다른 부분)\n"
+        "각 핵심 주장 옆에 근거 사례 키를 (LSI-49)처럼 인라인 인용하세요(제공된 키만, 창작 금지). 한자/CJK 한자 금지.\n\n"
+        f"## 미해결 이슈\n{q.get('summary','')}\n증상: {q.get('symptom','')}\n"
+        f"칩: {q.get('chip','')} / 분류: {q.get('category','')}{q_extra}\n\n"
+        f"## 과거 해결 사례\n{cases}\n")
+
+
+def _agno_stream(prompt: str, reasoning: bool = False):
+    """agno Agent 스트리밍 — 토큰 델타(str)를 순차 yield.
+
+    reasoning=True 면 모델이 단계적 추론 후 답해 분석 깊이가 커진다(첫 토큰 지연↑).
+    """
+    api_key = os.environ.get("OPENROUTER_API_KEY")
+    if not api_key:
+        return
+    from agno.agent import Agent
+    from agno.models.openrouter import OpenRouter
+    from agno.run.agent import RunContentEvent
+    model_id = os.getenv("RVP_MODEL") or os.getenv("OPENROUTER_MODEL", "openai/gpt-4o-mini")
+    base = os.getenv("OPENROUTER_BASE_URL", "https://openrouter.ai/api/v1")
+    kw = {}
+    if reasoning:
+        kw = {"reasoning": True, "reasoning_min_steps": 2, "reasoning_max_steps": 6}
+    agent = Agent(
+        model=OpenRouter(id=model_id, api_key=api_key, base_url=base, max_tokens=2800),
+        instructions=[
+            "LSI 칩/펌웨어 불량 분석 시니어 엔지니어로서 한국어 마크다운으로 깊이 있게 답한다.",
+            "지시된 모든 섹션을 순서대로 빠짐없이 작성한다(특히 권장 해결 단계·우회책 누락 금지).",
+            "제공된 '과거 해결 사례'만 근거로 사용하고, 근거 키는 (LSI-49)처럼 본문에 인라인 인용한다.",
+            "표면적 요약이 아니라 메커니즘 수준의 인과와 검증 방법까지 제시한다.",
+            "한자/CJK 한자 금지 — 한글/영문/숫자/문장부호만.",
+        ],
+        markdown=True, telemetry=False, **kw)
+    for ev in agent.run(input=prompt, stream=True):
+        # reasoning 단계는 스트리밍하지 않고 최종 답(RunContent)만 전송
+        if isinstance(ev, RunContentEvent) and isinstance(ev.content, str) and ev.content:
+            yield ev.content
+
+
+@app.get("/recommend/explain/stream")
+def explain_stream(key: Optional[str] = None, summary: str = "", symptom: str = "",
+                   chip: str = "", category: str = "", k: int = 4):
+    """LLM 종합 분석 SSE 스트리밍 — 본문은 토큰 단위로, 인용 검증은 완료 시.
+
+    이벤트: {type:delta,text} 반복 → {type:done,citations,dropped} | {type:error,message}.
+    """
+    st = _reco_state()
+    query_rec = (st["by_key"].get(key) if key else None) or {
+        "summary": summary, "symptom": symptom, "chip": chip, "category": category, "labels": []}
+    result = st["reco"].recommend(query_rec, k=k, exclude_key=key)
+    matches = result["matches"]
+    coverage = result.get("coverage", bool(matches))
+
+    def gen():
+        if not matches or not coverage:
+            yield f"data: {json.dumps({'type': 'done', 'citations': [], 'no_coverage': True}, ensure_ascii=False)}\n\n"
+            return
+        import re
+        valid = {m["key"] for m in matches}
+        # 근거 컨텍스트 강화: 매치를 전체 레코드(증상/디버깅 접근 포함)로 확장
+        match_recs = [st["by_key"].get(m["key"], m) for m in matches]
+        prompt = _explain_prompt_md(query_rec, match_recs)
+        reasoning = os.getenv("RVP_EXPLAIN_REASONING", "0") == "1"
+        acc: list[str] = []
+        try:
+            if ENGINE == "hermes":  # 스트리밍 미지원 → 1회 전송
+                text = _HERMES.complete(prompt)
+                acc.append(text)
+                yield f"data: {json.dumps({'type': 'delta', 'text': text}, ensure_ascii=False)}\n\n"
+            else:
+                for delta in _agno_stream(prompt, reasoning=reasoning):
+                    acc.append(delta)
+                    yield f"data: {json.dumps({'type': 'delta', 'text': delta}, ensure_ascii=False)}\n\n"
+            full = "".join(acc)
+            cited = sorted({m for m in re.findall(r"LSI-\d+", full)} & valid)
+            yield f"data: {json.dumps({'type': 'done', 'citations': cited}, ensure_ascii=False)}\n\n"
+        except Exception as e:
+            yield f"data: {json.dumps({'type': 'error', 'message': str(e)[:200]}, ensure_ascii=False)}\n\n"
+
+    return StreamingResponse(gen(), media_type="text/event-stream",
+                             headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"})
+
+
 @app.post("/recommend")
 def recommend(req: RecommendRequest):
     st = _reco_state()
@@ -462,6 +571,96 @@ def recommend(req: RecommendRequest):
         if ex["dropped"]:
             out["explanation_dropped_citations"] = ex["dropped"]  # 환각으로 제거된 키
     return out
+
+
+# ---------------------------------------------------------------------------
+# RCA 자동 댓글 — HITL 승인 큐 (생성 → 대기 → 사람 승인 시에만 Jira 게시)
+# ---------------------------------------------------------------------------
+BOT_MARKER = "자동 근본원인 분석"  # preprocess.BOT_COMMENT_MARKER 와 동일(파싱 제외용)
+
+
+def _rca_comment_body(query_rec: dict, result: dict) -> str:
+    """승인 시 Jira에 게시할 RCA 댓글 본문(api/2 wiki markup). 첫 줄에 봇 마커 포함."""
+    p = result.get("proposal") or {}
+    matches = result.get("matches", [])
+    cited = ", ".join(m["key"] for m in matches[:3])
+    conf = p.get("confidence", 0)
+    label = "높음" if (conf >= 0.67 and p.get("based_on_verified")) else "중간"
+    rows = "\n".join(
+        f"| {m['key']} | {m['summary'][:40]} | {round((m.get('rerank_score') or m.get('embed_cos') or 0)*100)}% |"
+        for m in matches)
+    return (
+        f"🤖 *{BOT_MARKER}* (RCA-bot | 근거: {cited} | 신뢰도: {label})\n\n"
+        f"h3. 예상 근본원인\n{p.get('root_cause','')}\n\n"
+        f"h3. 권장 해결책\n{p.get('resolution','')}\n\n"
+        f"h3. 임시 우회책\n{p.get('workaround') or '—'}\n\n"
+        f"h3. 유사 해결 사례\n|| 키 || 요약 || 관련도 ||\n{rows}\n\n"
+        f"_과거 해결 이슈 기반 자동 분석 (사람 승인 후 게시됨)._")
+
+
+class KeyBody(BaseModel):
+    key: str
+
+
+@app.post("/rca/draft")
+def rca_draft(req: KeyBody):
+    """미해결 이슈에 대한 RCA 댓글 초안 생성 → 승인 큐(pending)에 적재. Jira 쓰기 없음."""
+    import datetime as _dt
+    import rca_queue
+    st = _reco_state()
+    rec = st["by_key"].get(req.key)
+    if not rec:
+        return {"error": f"이슈 {req.key} 없음"}
+    if rec.get("status") == RESOLVED_STATUS:
+        return {"error": "이미 해결된 이슈입니다(미해결 이슈만 대상)."}
+    result = st["reco"].recommend(rec, k=4, exclude_key=req.key)
+    if not result["matches"] or not result.get("coverage"):
+        return {"error": "유사 사례 없음(coverage 미통과) — 시니어 검토 필요, 자동 게시 대상 아님."}
+    p = result["proposal"] or {}
+    conf = p.get("confidence", 0)
+    verified = bool(p.get("based_on_verified"))
+    item = {
+        "key": req.key, "summary": rec.get("summary", ""), "status": rec.get("status", ""),
+        "body": _rca_comment_body(rec, result),
+        "confidence": conf, "based_on_verified": verified,
+        # 신뢰도 낮거나 미검증 근거면 반드시 사람 검토(조건부 HITL)
+        "needs_review": (conf < 0.8) or (not verified),
+        "based_on": p.get("based_on", ""),
+        "created_at": _dt.datetime.now().isoformat(timespec="seconds"),
+        "state": "pending",
+    }
+    return {"item": rca_queue.upsert(item), "counts": rca_queue.counts()}
+
+
+@app.get("/rca/pending")
+def rca_pending():
+    import rca_queue
+    return {"items": rca_queue.items("pending"), "counts": rca_queue.counts()}
+
+
+@app.post("/rca/approve")
+def rca_approve(req: KeyBody):
+    """HITL 게이트 — 사람 승인 시에만 Jira에 게시(부작용 발생 지점)."""
+    import rca_queue
+    item = rca_queue.get(req.key)
+    if not item:
+        return {"error": "큐에 없음"}
+    if item.get("state") == "approved":
+        return {"ok": True, "already": True, "item": item}
+    try:
+        from jira_commenter import post_comment
+        res = post_comment(req.key, item["body"])
+        updated = rca_queue.set_state(req.key, "approved", comment_id=str(res.get("id", "")))
+        return {"ok": True, "item": updated, "counts": rca_queue.counts()}
+    except Exception as e:
+        return {"ok": False, "error": str(e)[:200]}
+
+
+@app.post("/rca/reject")
+def rca_reject(req: KeyBody):
+    import rca_queue
+    updated = rca_queue.set_state(req.key, "rejected")
+    return {"ok": bool(updated), "item": updated, "counts": rca_queue.counts()}
 
 
 if __name__ == "__main__":
