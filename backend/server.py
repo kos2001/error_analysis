@@ -131,6 +131,70 @@ def unresolved_issues():
     return {"count": len(out), "issues": out}
 
 
+@app.get("/graph")
+def issue_graph(key: Optional[str] = None, k: int = 12, min_shared: int = 2):
+    """이슈 간 관계 그래프 — 공유 엔티티(칩/분류/기술용어/라벨) 기반.
+
+    key 지정 시: 그 이슈 중심 ego-그래프(가장 많이 겹치는 이웃 top-k + 이웃 간 엣지).
+    미지정 시: 미해결 이슈를 시드로 한 소규모 샘플.
+    엣지 가중치=공유 엔티티 수, same_template=동일 근본원인 클래스(굵게 표시용).
+    """
+    st = _reco_state()
+    recs = st["records"]
+    by_key = st["by_key"]
+    ent = {r["key"]: set(r.get("entities", [])) for r in recs}
+
+    from recommender import _doc_text  # KB 문서 표현(요약+증상+분석) 재사용
+
+    rr: dict[str, float] = {}   # center→이웃 rerank 관련도(0~1)
+    if key and key in by_key:
+        c = ent[key]
+        scored = sorted(
+            ((r, len(c & ent[r["key"]])) for r in recs if r["key"] != key),
+            key=lambda x: -x[1])
+        neigh = [r for r, w in scored if w >= min_shared][:k]
+        # 엣지 강도를 reranker(cross-encoder)로 계산 — center를 질의로, 이웃을 문서로.
+        # 1회 호출. 실패/미설정 시 공유 엔티티 가중치로 폴백.
+        try:
+            from reranker import rerank as _rerank
+            docs = [_doc_text(r, analysis=True) for r in neigh]
+            order = _rerank(_doc_text(by_key[key], analysis=True), docs)
+            rr = {neigh[idx]["key"]: float(sc) for idx, sc in order}
+            neigh.sort(key=lambda r: -rr.get(r["key"], 0.0))  # 관련도 내림차순
+        except Exception:
+            rr = {}
+        nodeset = [by_key[key]] + neigh
+    else:
+        nodeset = st["unresolved"][:k] or recs[:k]
+
+    ekeys = [r["key"] for r in nodeset]
+    nodes = [{
+        "id": r["key"], "label": r["summary"], "status": r["status"],
+        "category": r["category"], "chip": r["chip"],
+        "template": template_key(r["summary"]),
+        "center": bool(key) and r["key"] == key,
+        # center 대비 rerank 관련도(0~1) — 노드 크기/거리 인코딩용. center=1.0.
+        "relevance": 1.0 if (key and r["key"] == key) else rr.get(r["key"]),
+    } for r in nodeset]
+    edges = []
+    for i in range(len(ekeys)):
+        for j in range(i + 1, len(ekeys)):
+            a, b = ekeys[i], ekeys[j]
+            w = len(ent[a] & ent[b])
+            if w < min_shared:
+                continue
+            touches_center = bool(key) and (a == key or b == key)
+            other = (b if a == key else a) if touches_center else None
+            edges.append({
+                "source": a, "target": b, "weight": w,
+                "same_template": (template_key(by_key[a]["summary"])
+                                  == template_key(by_key[b]["summary"])),
+                # center 엣지는 rerank 관련도(0~1)를 강도로 — 굵기/투명도 인코딩.
+                "rerank": rr.get(other) if touches_center else None,
+            })
+    return {"center": key, "nodes": nodes, "edges": edges, "has_rerank": bool(rr)}
+
+
 def _llm_explain(query_rec: dict, matches: list[dict]) -> str:
     """상위 매치들을 근거로 LLM이 종합 root-cause/해결책을 한국어로 작성."""
     import requests
