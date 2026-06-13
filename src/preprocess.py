@@ -13,11 +13,14 @@ repo의 `retrievers.py::GraphRetriever` 와 동일한 그래프 방법:
 from __future__ import annotations
 
 import json
+import os
 import pickle
 import re
 from pathlib import Path
 
 import networkx as nx
+
+import quality_gate
 
 ROOT = Path(__file__).resolve().parent.parent
 DATA_DIR = ROOT / "data"
@@ -202,11 +205,17 @@ def persist(records: list[dict], g: nx.Graph) -> None:
         pickle.dump(g, f)
 
 
-def run(raw_path: Path = RAW_JSON) -> tuple[list[dict], nx.Graph]:
+def run(raw_path: Path = RAW_JSON, *, strict: bool | None = None) -> tuple[list[dict], nx.Graph]:
     if not raw_path.exists():
         raise FileNotFoundError(f"{raw_path} 없음 — 먼저 src/ingest.py 실행")
     raw = json.load(raw_path.open())
     records = build_records(raw)
+    # 인입 품질 게이트(P1-2): 핵심 필드 충족률 검증. 기본 경고, RVP_INGEST_STRICT=1 또는
+    # strict=True면 미달 시 QualityGateError로 적재(persist) 차단 → 무음 오염 방지.
+    if strict is None:
+        strict = os.getenv("RVP_INGEST_STRICT", "0") == "1"
+    result = quality_gate.validate(records, strict=strict)
+    print(quality_gate.format_report(result))
     g = build_graph(records)
     persist(records, g)
     return records, g
