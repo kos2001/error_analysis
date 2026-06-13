@@ -573,6 +573,96 @@ def recommend(req: RecommendRequest):
     return out
 
 
+# ---------------------------------------------------------------------------
+# RCA 자동 댓글 — HITL 승인 큐 (생성 → 대기 → 사람 승인 시에만 Jira 게시)
+# ---------------------------------------------------------------------------
+BOT_MARKER = "자동 근본원인 분석"  # preprocess.BOT_COMMENT_MARKER 와 동일(파싱 제외용)
+
+
+def _rca_comment_body(query_rec: dict, result: dict) -> str:
+    """승인 시 Jira에 게시할 RCA 댓글 본문(api/2 wiki markup). 첫 줄에 봇 마커 포함."""
+    p = result.get("proposal") or {}
+    matches = result.get("matches", [])
+    cited = ", ".join(m["key"] for m in matches[:3])
+    conf = p.get("confidence", 0)
+    label = "높음" if (conf >= 0.67 and p.get("based_on_verified")) else "중간"
+    rows = "\n".join(
+        f"| {m['key']} | {m['summary'][:40]} | {round((m.get('rerank_score') or m.get('embed_cos') or 0)*100)}% |"
+        for m in matches)
+    return (
+        f"🤖 *{BOT_MARKER}* (RCA-bot | 근거: {cited} | 신뢰도: {label})\n\n"
+        f"h3. 예상 근본원인\n{p.get('root_cause','')}\n\n"
+        f"h3. 권장 해결책\n{p.get('resolution','')}\n\n"
+        f"h3. 임시 우회책\n{p.get('workaround') or '—'}\n\n"
+        f"h3. 유사 해결 사례\n|| 키 || 요약 || 관련도 ||\n{rows}\n\n"
+        f"_과거 해결 이슈 기반 자동 분석 (사람 승인 후 게시됨)._")
+
+
+class KeyBody(BaseModel):
+    key: str
+
+
+@app.post("/rca/draft")
+def rca_draft(req: KeyBody):
+    """미해결 이슈에 대한 RCA 댓글 초안 생성 → 승인 큐(pending)에 적재. Jira 쓰기 없음."""
+    import datetime as _dt
+    import rca_queue
+    st = _reco_state()
+    rec = st["by_key"].get(req.key)
+    if not rec:
+        return {"error": f"이슈 {req.key} 없음"}
+    if rec.get("status") == RESOLVED_STATUS:
+        return {"error": "이미 해결된 이슈입니다(미해결 이슈만 대상)."}
+    result = st["reco"].recommend(rec, k=4, exclude_key=req.key)
+    if not result["matches"] or not result.get("coverage"):
+        return {"error": "유사 사례 없음(coverage 미통과) — 시니어 검토 필요, 자동 게시 대상 아님."}
+    p = result["proposal"] or {}
+    conf = p.get("confidence", 0)
+    verified = bool(p.get("based_on_verified"))
+    item = {
+        "key": req.key, "summary": rec.get("summary", ""), "status": rec.get("status", ""),
+        "body": _rca_comment_body(rec, result),
+        "confidence": conf, "based_on_verified": verified,
+        # 신뢰도 낮거나 미검증 근거면 반드시 사람 검토(조건부 HITL)
+        "needs_review": (conf < 0.8) or (not verified),
+        "based_on": p.get("based_on", ""),
+        "created_at": _dt.datetime.now().isoformat(timespec="seconds"),
+        "state": "pending",
+    }
+    return {"item": rca_queue.upsert(item), "counts": rca_queue.counts()}
+
+
+@app.get("/rca/pending")
+def rca_pending():
+    import rca_queue
+    return {"items": rca_queue.items("pending"), "counts": rca_queue.counts()}
+
+
+@app.post("/rca/approve")
+def rca_approve(req: KeyBody):
+    """HITL 게이트 — 사람 승인 시에만 Jira에 게시(부작용 발생 지점)."""
+    import rca_queue
+    item = rca_queue.get(req.key)
+    if not item:
+        return {"error": "큐에 없음"}
+    if item.get("state") == "approved":
+        return {"ok": True, "already": True, "item": item}
+    try:
+        from jira_commenter import post_comment
+        res = post_comment(req.key, item["body"])
+        updated = rca_queue.set_state(req.key, "approved", comment_id=str(res.get("id", "")))
+        return {"ok": True, "item": updated, "counts": rca_queue.counts()}
+    except Exception as e:
+        return {"ok": False, "error": str(e)[:200]}
+
+
+@app.post("/rca/reject")
+def rca_reject(req: KeyBody):
+    import rca_queue
+    updated = rca_queue.set_state(req.key, "rejected")
+    return {"ok": bool(updated), "item": updated, "counts": rca_queue.counts()}
+
+
 if __name__ == "__main__":
     import uvicorn
     import os as _os
