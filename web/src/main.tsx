@@ -20,12 +20,17 @@ function Root() {
   useEffect(() => { load(); loadPending(); }, []);
 
   const showOnboarding = status !== undefined && (forceCfg || !status.ready);
+  const goHome = () => { setView("app"); setForceCfg(false); };
 
   return (
     <div className="h-screen flex flex-col">
       <nav className="flex items-center gap-1 px-4 h-11 bg-slate-900 text-slate-300 text-sm shrink-0">
-        <span className="font-semibold text-white mr-3">LSI Error Analysis</span>
-        <span className="px-3 py-1 rounded bg-indigo-600 text-white">불량 분석 추천</span>
+        <button onClick={goHome} title="홈(분석 화면)으로"
+          className="font-semibold text-white mr-3 hover:opacity-80">🏠 LSI Error Analysis</button>
+        <button onClick={goHome}
+          className={`px-3 py-1 rounded ${view === "app" && !forceCfg ? "bg-indigo-600 text-white" : "text-slate-300 hover:text-white"}`}>
+          불량 분석 추천
+        </button>
         {status?.ready && !showOnboarding && (
           <div className="ml-auto flex items-center gap-2">
             <button onClick={() => { setView(view === "rca" ? "app" : "rca"); loadPending(); }}

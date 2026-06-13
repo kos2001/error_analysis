@@ -251,7 +251,7 @@ export default function FailureAnalysis({ onQueueChange }: { onQueueChange?: () 
     } catch (e: any) { setDraftMsg(`⚠ ${e.message}`); } finally { setDrafting(false); }
   };
 
-  // 시니어 종합 분석(LLM) → HITL 승인 대기 큐 (생성물이라 항상 검토 후 게시)
+  // AI 심층 분석(LLM) → HITL 승인 대기 큐 (생성물이라 항상 검토 후 게시)
   const [draftingAn, setDraftingAn] = useState(false);
   const [draftAnMsg, setDraftAnMsg] = useState("");
   const draftFromAnalysis = async () => {
@@ -262,7 +262,7 @@ export default function FailureAnalysis({ onQueueChange }: { onQueueChange?: () 
         method: "POST", headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ key: sel.key, analysis_md: reco.explanation, citations: reco.explanation_citations ?? [] }),
       }).then((r) => r.json());
-      setDraftAnMsg(d.error ? `⚠ ${d.error}` : "✓ 이 종합 분석을 승인 대기 큐에 추가했습니다 (검토 후 게시)");
+      setDraftAnMsg(d.error ? `⚠ ${d.error}` : "✓ 이 심층 분석을 승인 대기 큐에 추가했습니다 (검토 후 게시)");
       if (!d.error) onQueueChange?.();
     } catch (e: any) { setDraftAnMsg(`⚠ ${e.message}`); } finally { setDraftingAn(false); }
   };
@@ -435,7 +435,7 @@ export default function FailureAnalysis({ onQueueChange }: { onQueueChange?: () 
                         <div className="mt-4 flex items-center gap-2 flex-wrap">
                           <button onClick={explain} disabled={explaining}
                             className="text-sm px-4 py-2 rounded-lg bg-indigo-600 text-white hover:bg-indigo-700 disabled:opacity-50 transition">
-                            {explaining ? "시니어 종합 분석 생성 중…" : "✨ 시니어 종합 분석 생성 (LLM)"}
+                            {explaining ? "AI 심층 분석 생성 중…" : "✨ AI 심층 분석 (LLM)"}
                           </button>
                           {sel && sel.status !== "완료" && (
                             <button onClick={draftRca} disabled={drafting}
@@ -470,9 +470,9 @@ export default function FailureAnalysis({ onQueueChange }: { onQueueChange?: () 
                         {sel && sel.status !== "완료" && !explaining && (
                           <div className="mt-3 pt-3 border-t border-indigo-200">
                             <button onClick={draftFromAnalysis} disabled={draftingAn}
-                              title="이 종합 분석을 RCA 댓글로 승인 대기 큐에 추가 (사람 승인 후에만 Jira 게시)"
+                              title="이 심층 분석을 RCA 댓글로 승인 대기 큐에 추가 (사람 승인 후에만 Jira 게시)"
                               className="text-sm px-4 py-2 rounded-lg border border-indigo-300 text-indigo-600 hover:bg-indigo-100 disabled:opacity-50 transition">
-                              {draftingAn ? "추가 중…" : "📤 이 분석을 RCA 댓글로 → 승인 대기"}
+                              {draftingAn ? "추가 중…" : "📤 이 심층 분석을 RCA 댓글로 → 승인 대기"}
                             </button>
                             {draftAnMsg && <div className="mt-2 text-xs text-slate-500">{draftAnMsg}</div>}
                           </div>

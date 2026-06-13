@@ -602,23 +602,47 @@ def recommend(req: RecommendRequest):
 BOT_MARKER = "자동 근본원인 분석"  # preprocess.BOT_COMMENT_MARKER 와 동일(파싱 제외용)
 
 
+def _md_to_jira(md: str) -> str:
+    """게시 직전 마크다운 → Jira wiki markup 변환(api/2가 wiki를 렌더하므로).
+
+    헤딩 #..# → h1.~h6., **굵게** → *굵게*, '- ' 글머리 → '* '. 본문/큐/미리보기는
+    마크다운 정본을 유지하고, 게시 시점에만 변환한다.
+    """
+    import re
+    lines = []
+    for ln in md.split("\n"):
+        m = re.match(r"^(#{1,6})\s+(.*)$", ln)
+        if m:
+            lines.append(f"h{len(m.group(1))}. {m.group(2)}")
+        else:
+            lines.append(re.sub(r"^(\s*)[-*]\s+", r"\1* ", ln))
+    s = "\n".join(lines)
+    s = re.sub(r"\*\*([^*\n]+)\*\*", r"*\1*", s)   # 마크다운 볼드 → Jira 볼드
+    return s
+
+
+def _strip_preamble(md: str) -> str:
+    """첫 헤딩(###) 이전의 LLM 서두(예: '네, ...하겠습니다')를 제거."""
+    idx = md.find("\n### ")
+    if md.lstrip().startswith("### "):
+        return md.strip()
+    return (md[idx + 1:].strip() if idx != -1 else md.strip())
+
+
 def _rca_comment_body(query_rec: dict, result: dict) -> str:
-    """승인 시 Jira에 게시할 RCA 댓글 본문(api/2 wiki markup). 첫 줄에 봇 마커 포함."""
+    """RCA 댓글 본문(마크다운 정본; 게시 시 _md_to_jira로 변환). 참조는 Jira ID만."""
     p = result.get("proposal") or {}
     matches = result.get("matches", [])
     cited = ", ".join(m["key"] for m in matches[:3])
     conf = p.get("confidence", 0)
     label = "높음" if (conf >= 0.67 and p.get("based_on_verified")) else "중간"
-    rows = "\n".join(
-        f"| {m['key']} | {m['summary'][:40]} | {round((m.get('rerank_score') or m.get('embed_cos') or 0)*100)}% |"
-        for m in matches)
     return (
-        f"🤖 *{BOT_MARKER}* (RCA-bot | 근거: {cited} | 신뢰도: {label})\n\n"
-        f"h3. 예상 근본원인\n{p.get('root_cause','')}\n\n"
-        f"h3. 권장 해결책\n{p.get('resolution','')}\n\n"
-        f"h3. 임시 우회책\n{p.get('workaround') or '—'}\n\n"
-        f"h3. 유사 해결 사례\n|| 키 || 요약 || 관련도 ||\n{rows}\n\n"
-        f"_과거 해결 이슈 기반 자동 분석 (사람 승인 후 게시됨)._")
+        f"🤖 **{BOT_MARKER}** (RCA-bot · 신뢰도 {label})\n\n"
+        f"### 예상 근본원인\n{p.get('root_cause','')}\n\n"
+        f"### 권장 해결책\n{p.get('resolution','')}\n\n"
+        f"### 임시 우회책\n{p.get('workaround') or '—'}\n\n"
+        f"참고 사례: {cited}\n\n"
+        f"_과거 해결 이슈 기반 자동 분석 (사람 승인 후 게시)._")
 
 
 class KeyBody(BaseModel):
@@ -681,9 +705,9 @@ def rca_draft_from_analysis(req: AnalysisDraftBody):
     cited = sorted({k for k in (set(req.citations) | set(re.findall(r"LSI-\d+", req.analysis_md)))} & valid)
     cited_str = ", ".join(cited) if cited else "없음"
     body = (
-        f"🤖 *{BOT_MARKER}* (RCA-bot | 시니어 종합 분석(LLM) | 근거: {cited_str})\n\n"
-        f"{req.analysis_md.strip()}\n\n"
-        f"_과거 해결 이슈 기반 LLM 종합 분석 (사람 승인 후 게시됨)._")
+        f"🤖 **{BOT_MARKER}** (RCA-bot · AI 심층 분석 · 근거: {cited_str})\n\n"
+        f"{_strip_preamble(req.analysis_md)}\n\n"
+        f"_과거 해결 이슈 기반 AI 심층 분석 (사람 승인 후 게시)._")
     item = {
         "key": req.key, "summary": rec.get("summary", ""), "status": rec.get("status", ""),
         "body": body, "confidence": None, "based_on_verified": False,
@@ -718,10 +742,10 @@ def rca_approve(req: ApproveBody):
     if item.get("state") == "approved":
         return {"ok": True, "already": True, "item": item}
     original = item.get("body", "")
-    final = (req.body if (req.body and req.body.strip()) else original)
+    final = (req.body if (req.body and req.body.strip()) else original)  # 마크다운 정본
     try:
         from jira_commenter import post_comment
-        res = post_comment(req.key, final)
+        res = post_comment(req.key, _md_to_jira(final))  # 게시 직전 Jira wiki로 변환
         now = _dt.datetime.now().isoformat(timespec="seconds")
         updated = rca_queue.set_state(req.key, "approved", comment_id=str(res.get("id", "")),
                                       final_body=final, edited=(original.strip() != final.strip()))
