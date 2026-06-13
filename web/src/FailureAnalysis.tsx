@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useState, type PointerEvent as ReactPointerEvent } from "react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 
@@ -11,10 +11,111 @@ type Issue = {
 type Match = {
   key: string; score: number; summary: string; chip: string; category: string;
   root_cause: string; resolution: string; workaround: string; debug_approach: string;
-  embed_cos?: number; entity_overlap?: number; bm25_raw?: number;
+  embed_cos?: number; entity_overlap?: number; bm25_raw?: number; rerank_score?: number; verified?: boolean;
 };
 type Proposal = { root_cause: string; resolution: string; workaround: string; based_on: string; confidence: number };
 type RecoResp = { query: any; matches: Match[]; proposal: Proposal | null; coverage: boolean; explanation?: string };
+type GNode = { id: string; label: string; status: string; category: string; chip: string; template: string; center: boolean; relevance: number | null };
+type GEdge = { source: string; target: string; weight: number; same_template: boolean; rerank: number | null };
+type GraphData = { center: string | null; nodes: GNode[]; edges: GEdge[]; has_rerank?: boolean };
+
+const STATUS_HEX: Record<string, string> = {
+  "진행 중": "#10b981", "해야 할 일": "#94a3b8", "완료": "#3b82f6",
+};
+
+// 이슈 관계 그래프 — center 중심. rerank 관련도를 노드 크기·선 굵기로 인코딩하고
+// 초기엔 관련도순 거리로 배치 후, 충돌 완화(겹침 제거)를 돌린다. 의존성 없는 인라인 SVG.
+function RelationGraph({ data, onSelect }: { data: GraphData; onSelect: (k: string) => void }) {
+  const W = 360, H = 360, CX = W / 2, CY = H / 2;
+  const RNEAR = 78, RFAR = 150, M = 36;            // M: 라벨용 가장자리 여백
+  const center = data.nodes.find((n) => n.center) ?? data.nodes[0];
+  const neigh = data.nodes.filter((n) => n !== center); // 백엔드에서 관련도 내림차순 정렬됨
+  const cid = center?.id;
+  const nodeR = (n: GNode) => (n.center ? 16 : 6 + (n.relevance ?? 0) * 8);
+
+  // 1) 초기 배치: 관련도↑ → center에 가깝게, 각도는 균등
+  const pos: Record<string, { x: number; y: number; r: number }> = {};
+  if (center) pos[center.id] = { x: CX, y: CY, r: 16 };
+  neigh.forEach((n, i) => {
+    const a = (2 * Math.PI * i) / Math.max(neigh.length, 1) - Math.PI / 2;
+    const rad = RFAR - (n.relevance ?? 0) * (RFAR - RNEAR);
+    pos[n.id] = { x: CX + rad * Math.cos(a), y: CY + rad * Math.sin(a), r: nodeR(n) };
+  });
+  // 2) 충돌 완화: 라벨 폭까지 고려한 최소 간격 확보(center는 고정). 결정론적.
+  const LABEL = 38;                                 // 'LSI-247' 라벨이 차지하는 반경 여유
+  for (let it = 0; it < 80; it++) {
+    for (let i = 0; i < neigh.length; i++) {
+      const A = pos[neigh[i].id];
+      // center에서 밀어내기
+      let dx = A.x - CX, dy = A.y - CY, d = Math.hypot(dx, dy) || 0.01;
+      const minC = A.r + 16 + 16;
+      if (d < minC) { A.x = CX + (dx / d) * minC; A.y = CY + (dy / d) * minC; }
+      // 다른 이웃과 분리
+      for (let j = i + 1; j < neigh.length; j++) {
+        const B = pos[neigh[j].id];
+        let ex = A.x - B.x, ey = A.y - B.y, e = Math.hypot(ex, ey) || 0.01;
+        const minD = A.r + B.r + LABEL;
+        if (e < minD) {
+          const push = (minD - e) / 2;
+          A.x += (ex / e) * push; A.y += (ey / e) * push;
+          B.x -= (ex / e) * push; B.y -= (ey / e) * push;
+        }
+      }
+      A.x = Math.max(M, Math.min(W - M, A.x));
+      A.y = Math.max(M, Math.min(H - M, A.y));
+    }
+  }
+  const shown = data.edges.filter((e) => e.source === cid || e.target === cid || e.same_template);
+  const relColor = (rel: number) => `rgb(${Math.round(99 + (1 - rel) * 130)},${Math.round(102 + (1 - rel) * 110)},241)`;
+  return (
+    <svg viewBox={`0 0 ${W} ${H}`} className="w-full" style={{ maxHeight: 360 }}>
+      <defs>
+        <filter id="nodeShadow" x="-50%" y="-50%" width="200%" height="200%">
+          <feDropShadow dx="0" dy="1" stdDeviation="1.2" floodColor="#1e293b" floodOpacity="0.22" />
+        </filter>
+      </defs>
+      {/* 엣지 */}
+      {shown.map((e, i) => {
+        const a = pos[e.source], b = pos[e.target]; if (!a || !b) return null;
+        const isCenter = e.rerank != null;
+        const rel = e.rerank ?? 0;
+        return (
+          <line key={i} x1={a.x} y1={a.y} x2={b.x} y2={b.y}
+            stroke={isCenter ? relColor(rel) : "#cbd5e1"}
+            strokeWidth={isCenter ? 1.2 + rel * 5 : 1}
+            strokeOpacity={isCenter ? 0.3 + rel * 0.55 : 0.4}
+            strokeLinecap="round">
+            {isCenter && <title>{`${e.source} ↔ ${e.target}\nrerank 관련도 ${Math.round(rel * 100)}%`}</title>}
+          </line>
+        );
+      })}
+      {/* 노드 */}
+      {data.nodes.map((n) => {
+        const p = pos[n.id]; if (!p) return null;
+        const sib = !n.center && n.template === center?.template; // 같은 근본원인 형제
+        return (
+          <g key={n.id} transform={`translate(${p.x},${p.y})`} className="cursor-pointer"
+            onClick={() => onSelect(n.id)}>
+            <title>{`${n.id} · ${n.status}${n.relevance != null ? ` · 관련도 ${Math.round(n.relevance * 100)}%` : ""}\n${n.label}`}</title>
+            {n.center && <circle r={p.r + 5} fill="none" stroke="#6366f1" strokeWidth={2} strokeOpacity={0.5} />}
+            {sib && <circle r={p.r + 3} fill="none" stroke="#6366f1" strokeWidth={1.5} strokeDasharray="2 2" />}
+            <circle r={p.r} fill={STATUS_HEX[n.status] ?? "#94a3b8"}
+              stroke="#fff" strokeWidth={1.8} filter="url(#nodeShadow)" />
+            {/* 노드 아래: Jira 이슈 ID (전체). 흰색 외곽선(halo)으로 엣지/노드 위에서도 또렷하게 */}
+            <text y={p.r + 13} textAnchor="middle" fontSize={11} fontWeight={700}
+              fill="#0f172a" stroke="#ffffff" strokeWidth={3.5} paintOrder="stroke"
+              strokeLinejoin="round" className="font-mono select-none">{n.id}</text>
+            {!n.center && n.relevance != null && (
+              <text y={p.r + 24} textAnchor="middle" fontSize={9} fontWeight={700}
+                fill="#4f46e5" stroke="#ffffff" strokeWidth={3} paintOrder="stroke"
+                strokeLinejoin="round" className="select-none">{Math.round(n.relevance * 100)}%</text>
+            )}
+          </g>
+        );
+      })}
+    </svg>
+  );
+}
 
 const CAT_COLOR: Record<string, string> = {
   Firmware: "bg-blue-100 text-blue-700", Thermal: "bg-red-100 text-red-700",
@@ -22,6 +123,11 @@ const CAT_COLOR: Record<string, string> = {
   Hardware: "bg-orange-100 text-orange-700", Power: "bg-amber-100 text-amber-700",
   Security: "bg-cyan-100 text-cyan-700",
 };
+// %값 → 색상(높을수록 강한 관련). 카드의 관련도/임베딩 색 구분용.
+const pctText = (pct: number) =>
+  pct >= 80 ? "text-emerald-600" : pct >= 60 ? "text-lime-600"
+    : pct >= 40 ? "text-amber-600" : "text-rose-500";
+
 const statusBadge = (s: string) =>
   s === "진행 중" ? "bg-emerald-500" : s === "해야 할 일" ? "bg-slate-400" : "bg-blue-500";
 
@@ -49,11 +155,43 @@ export default function FailureAnalysis() {
   const [explaining, setExplaining] = useState(false);
   const [keyInput, setKeyInput] = useState("");
   const [err, setErr] = useState("");
+  const [graph, setGraph] = useState<GraphData | null>(null);
+  // 사이드바 너비 조정 + 접기
+  const [leftW, setLeftW] = useState(320);
+  const [rightW, setRightW] = useState(340);
+  const [leftOpen, setLeftOpen] = useState(true);
+  const [rightOpen, setRightOpen] = useState(true);
+  const startDrag = (side: "left" | "right", e: ReactPointerEvent) => {
+    e.preventDefault();
+    const startX = e.clientX;
+    const startW = side === "left" ? leftW : rightW;
+    const onMove = (ev: PointerEvent) => {
+      const dx = ev.clientX - startX;
+      const raw = side === "left" ? startW + dx : startW - dx;
+      const w = Math.max(side === "left" ? 200 : 260, Math.min(640, raw));
+      side === "left" ? setLeftW(w) : setRightW(w);
+    };
+    const onUp = () => {
+      window.removeEventListener("pointermove", onMove);
+      window.removeEventListener("pointerup", onUp);
+      document.body.style.userSelect = "";
+    };
+    document.body.style.userSelect = "none";
+    window.addEventListener("pointermove", onMove);
+    window.addEventListener("pointerup", onUp);
+  };
 
   useEffect(() => {
     fetch(`${API}/reco/stats`).then((r) => r.json()).then(setStats).catch(() => {});
     fetch(`${API}/issues/unresolved`).then((r) => r.json()).then((d) => setIssues(d.issues ?? [])).catch(() => {});
   }, []);
+
+  // 선택 이슈가 바뀌면 관계 그래프 로드 (우측 사이드바)
+  useEffect(() => {
+    if (!sel?.key) { setGraph(null); return; }
+    fetch(`${API}/graph?key=${encodeURIComponent(sel.key)}&k=12`)
+      .then((r) => r.json()).then(setGraph).catch(() => setGraph(null));
+  }, [sel?.key]);
 
   const cats = useMemo(() => Array.from(new Set(issues.map((i) => i.category))).sort(), [issues]);
   const filtered = useMemo(
@@ -89,9 +227,9 @@ export default function FailureAnalysis() {
 
   const explain = () => { if (sel) runExplain(sel.key); };
 
-  // Jira 번호 직접 입력 → 유사 사례 검색 + 에이전트(LLM) 종합 분석 자동 실행
-  const analyzeByKey = async () => {
-    const t = keyInput.trim().toUpperCase();
+  // Jira 번호(또는 그래프 노드 클릭) → 유사 사례 검색 + 에이전트(LLM) 종합 분석
+  const goKey = async (raw: string) => {
+    const t = raw.trim().toUpperCase();
     if (!t) return;
     const key = /^\d+$/.test(t) ? `LSI-${t}` : t;
     setErr("");
@@ -124,10 +262,15 @@ export default function FailureAnalysis() {
 
   return (
     <div className="h-full flex bg-slate-50 text-slate-900">
-      {/* 좌: 미해결 이슈 목록 */}
-      <aside className="w-80 border-r border-slate-200 bg-white flex flex-col">
+      {/* 좌: 미해결 이슈 목록 (너비 조정 + 접기) */}
+      {leftOpen ? (
+      <aside style={{ width: leftW }} className="shrink-0 border-r border-slate-200 bg-white flex flex-col">
         <div className="p-4 border-b border-slate-200">
-          <div className="text-xs font-semibold text-slate-500 mb-2">미해결 이슈 {issues.length}건</div>
+          <div className="flex items-center justify-between mb-2">
+            <div className="text-xs font-semibold text-slate-500">미해결 이슈 {issues.length}건</div>
+            <button onClick={() => setLeftOpen(false)} title="목록 접기"
+              className="text-slate-400 hover:text-indigo-600 px-1 leading-none">◀</button>
+          </div>
           <input
             value={q} onChange={(e) => setQ(e.target.value)}
             placeholder="이슈 검색 (키/칩/증상)"
@@ -156,11 +299,22 @@ export default function FailureAnalysis() {
           ))}
         </div>
       </aside>
+      ) : (
+        <button onClick={() => setLeftOpen(true)} title="이슈 목록 펼치기"
+          className="w-7 shrink-0 border-r border-slate-200 bg-white hover:bg-indigo-50 flex flex-col items-center justify-center gap-2 text-slate-400 hover:text-indigo-600">
+          <span>▶</span>
+          <span className="text-[10px] [writing-mode:vertical-rl]">이슈 목록</span>
+        </button>
+      )}
+      {leftOpen && (
+        <div onPointerDown={(e) => startDrag("left", e)} title="드래그하여 너비 조정"
+          className="w-1.5 shrink-0 cursor-col-resize bg-slate-200 hover:bg-indigo-400 active:bg-indigo-500 transition-colors" />
+      )}
 
       {/* 우: 추천 결과 */}
-      <main className="flex-1 overflow-y-auto">
+      <main className="flex-1 min-w-0 overflow-y-auto">
         <header className="bg-gradient-to-r from-indigo-600 to-violet-600 text-white px-8 py-5">
-          <h1 className="text-xl font-bold">LSI 고장 분석 어시스턴트</h1>
+          <h1 className="text-xl font-bold">LSI 불량 분석 어시스턴트</h1>
           <p className="text-indigo-100 text-sm mt-1">
             과거 해결 이슈 기반 root-cause·해결책 추천 · graph/BM25 hybrid retrieval
           </p>
@@ -173,7 +327,7 @@ export default function FailureAnalysis() {
             </div>
           )}
           <form
-            onSubmit={(e) => { e.preventDefault(); analyzeByKey(); }}
+            onSubmit={(e) => { e.preventDefault(); goKey(keyInput); }}
             className="mt-3 flex gap-2 max-w-md">
             <input
               value={keyInput} onChange={(e) => setKeyInput(e.target.value)}
@@ -188,7 +342,7 @@ export default function FailureAnalysis() {
         </header>
 
         {err && (
-          <div className="m-8 bg-red-50 border border-red-200 rounded-xl p-5 text-red-700 text-sm max-w-4xl">
+          <div className="m-8 bg-red-50 border border-red-200 rounded-xl p-5 text-red-700 text-sm">
             ⚠️ {err}
           </div>
         )}
@@ -199,7 +353,7 @@ export default function FailureAnalysis() {
             과거 해결 사례 기반 근본원인·해결책을 에이전트가 분석합니다.
           </div>
         ) : !sel ? null : (
-          <div className="p-8 space-y-6 max-w-4xl">
+          <div className="p-8 space-y-6 w-full">
             {/* 선택 이슈 */}
             <section className="bg-white rounded-xl border border-slate-200 p-5">
               <div className="flex items-center gap-2 mb-2">
@@ -262,8 +416,22 @@ export default function FailureAnalysis() {
                               <span className="font-mono text-xs text-indigo-600 font-semibold">{m.key}</span>
                               <span className={`text-[10px] px-1.5 py-0.5 rounded ${CAT_COLOR[m.category] ?? "bg-slate-100"}`}>{m.category}</span>
                               <span className="text-[10px] px-1.5 py-0.5 rounded bg-slate-100 text-slate-500">{m.chip}</span>
-                              <span className="ml-auto text-[10px] text-slate-400">
-                                {m.embed_cos != null ? `유사도 ${Math.round(m.embed_cos * 100)}%` : `유사도 ${m.score.toFixed(3)}`}
+                              {m.verified && (
+                                <span className="text-[10px] px-1.5 py-0.5 rounded bg-emerald-50 text-emerald-600" title="해결 검증 + 고객 확인 완료">✓ 검증됨</span>
+                              )}
+                              <span className="ml-auto text-[10px] text-slate-400 flex items-center gap-2" title="관련도=reranker 재순위 점수(카드 정렬 기준) · 임베딩=bi-encoder 코사인">
+                                {m.rerank_score != null ? (
+                                  <>
+                                    <span>관련도 <b className={`font-bold ${pctText(Math.round(m.rerank_score * 100))}`}>{Math.round(m.rerank_score * 100)}%</b></span>
+                                    {m.embed_cos != null && (
+                                      <span>임베딩 <b className={`font-bold ${pctText(Math.round(m.embed_cos * 100))}`}>{Math.round(m.embed_cos * 100)}%</b></span>
+                                    )}
+                                  </>
+                                ) : m.embed_cos != null ? (
+                                  <span>유사도 <b className={`font-bold ${pctText(Math.round(m.embed_cos * 100))}`}>{Math.round(m.embed_cos * 100)}%</b></span>
+                                ) : (
+                                  <span>유사도 {m.score.toFixed(3)}</span>
+                                )}
                               </span>
                             </div>
                             <div className="text-sm font-medium leading-snug">{m.summary}</div>
@@ -286,6 +454,60 @@ export default function FailureAnalysis() {
           </div>
         )}
       </main>
+
+      {/* 우: 이슈 관계 그래프 (너비 조정 + 접기) */}
+      {rightOpen && (
+        <div onPointerDown={(e) => startDrag("right", e)} title="드래그하여 너비 조정"
+          className="w-1.5 shrink-0 cursor-col-resize bg-slate-200 hover:bg-indigo-400 active:bg-indigo-500 transition-colors" />
+      )}
+      {rightOpen ? (
+      <aside style={{ width: rightW }} className="shrink-0 border-l border-slate-200 bg-white flex flex-col">
+        <div className="p-4 border-b border-slate-200">
+          <div className="flex items-center justify-between">
+            <div className="text-sm font-semibold text-slate-700">🔗 이슈 관계 그래프</div>
+            <button onClick={() => setRightOpen(false)} title="그래프 접기"
+              className="text-slate-400 hover:text-indigo-600 px-1 leading-none">▶</button>
+          </div>
+          <div className="text-xs text-slate-400 mt-0.5">공유 엔티티(칩·분류·기술용어) 기반 · 노드 클릭 시 이동</div>
+        </div>
+        <div className="flex-1 overflow-y-auto p-3">
+          {!sel ? (
+            <div className="text-xs text-slate-400 p-4 text-center">이슈를 선택하면 관련 이슈들의 관계가 그래프로 표시됩니다.</div>
+          ) : !graph || graph.nodes.length <= 1 ? (
+            <div className="text-xs text-slate-400 p-4 text-center">관계 그래프 로딩 중… (또는 관련 이슈 없음)</div>
+          ) : (
+            <>
+              <RelationGraph data={graph} onSelect={goKey} />
+              <div className="mt-3 space-y-1.5 text-[11px] text-slate-500">
+                <div className="flex items-center gap-2">
+                  <svg width="26" height="8"><line x1="0" y1="4" x2="26" y2="4" stroke="#6366f1" strokeWidth="5" strokeLinecap="round" /></svg>
+                  선 굵기·노드 크기 = <b className="text-indigo-600">rerank 관련도</b>
+                </div>
+                <div className="flex items-center gap-2">
+                  <svg width="26" height="10"><circle cx="13" cy="5" r="4" fill="none" stroke="#6366f1" strokeWidth="1.2" strokeDasharray="2 2" /></svg>
+                  점선 테두리 = 같은 근본원인(동일 템플릿)
+                </div>
+                <div className="flex items-center gap-3 pt-1">
+                  <span className="flex items-center gap-1"><span className="w-2.5 h-2.5 rounded-full" style={{ background: "#10b981" }} />진행 중</span>
+                  <span className="flex items-center gap-1"><span className="w-2.5 h-2.5 rounded-full" style={{ background: "#94a3b8" }} />해야 할 일</span>
+                  <span className="flex items-center gap-1"><span className="w-2.5 h-2.5 rounded-full" style={{ background: "#3b82f6" }} />완료</span>
+                </div>
+                <div className="pt-1 text-slate-400">
+                  중심 <span className="font-mono">{graph.center}</span> · 관련 {graph.nodes.length - 1}건
+                  {graph.has_rerank === false && <span className="text-amber-500"> · (rerank 미적용: 엔티티 기반)</span>}
+                </div>
+              </div>
+            </>
+          )}
+        </div>
+      </aside>
+      ) : (
+        <button onClick={() => setRightOpen(true)} title="관계 그래프 펼치기"
+          className="w-7 shrink-0 border-l border-slate-200 bg-white hover:bg-indigo-50 flex flex-col items-center justify-center gap-2 text-slate-400 hover:text-indigo-600">
+          <span>◀</span>
+          <span className="text-[10px] [writing-mode:vertical-rl]">관계 그래프</span>
+        </button>
+      )}
     </div>
   );
 }

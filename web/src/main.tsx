@@ -8,7 +8,7 @@ function Root() {
     <div className="h-screen flex flex-col">
       <nav className="flex items-center gap-1 px-4 h-11 bg-slate-900 text-slate-300 text-sm shrink-0">
         <span className="font-semibold text-white mr-3">LSI Error Analysis</span>
-        <span className="px-3 py-1 rounded bg-indigo-600 text-white">고장 분석 추천</span>
+        <span className="px-3 py-1 rounded bg-indigo-600 text-white">불량 분석 추천</span>
       </nav>
       <div className="flex-1 min-h-0">
         <FailureAnalysis />
