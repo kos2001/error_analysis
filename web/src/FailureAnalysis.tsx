@@ -213,16 +213,25 @@ export default function FailureAnalysis() {
     } finally { setLoading(false); }
   };
 
-  const runExplain = async (key: string) => {
+  // LLM 종합 분석을 SSE로 스트리밍 — 본문은 토큰 단위, 인용은 완료 시 검증본 반영
+  const runExplain = (key: string) => {
     setExplaining(true);
-    try {
-      const r = await fetch(`${API}/recommend`, {
-        method: "POST", headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ key, k: 4, explain: true }),
-      });
-      const d: RecoResp = await r.json();
-      setReco((prev) => (prev ? { ...prev, explanation: d.explanation, explanation_citations: d.explanation_citations, explanation_dropped_citations: d.explanation_dropped_citations } : d));
-    } finally { setExplaining(false); }
+    setReco((prev) => (prev ? { ...prev, explanation: "", explanation_citations: [], explanation_dropped_citations: [] } : prev));
+    const es = new EventSource(`${API}/recommend/explain/stream?key=${encodeURIComponent(key)}&k=4`);
+    const finish = () => { es.close(); setExplaining(false); };
+    es.onmessage = (e) => {
+      let d: any; try { d = JSON.parse(e.data); } catch { return; }
+      if (d.type === "delta") {
+        setReco((prev) => (prev ? { ...prev, explanation: (prev.explanation || "") + d.text } : prev));
+      } else if (d.type === "done") {
+        setReco((prev) => (prev ? { ...prev, explanation_citations: d.citations || [] } : prev));
+        finish();
+      } else if (d.type === "error") {
+        setReco((prev) => (prev ? { ...prev, explanation: (prev.explanation || "") + `\n\n_(생성 오류: ${d.message})_` } : prev));
+        finish();
+      }
+    };
+    es.onerror = finish;
   };
 
   const explain = () => { if (sel) runExplain(sel.key); };
