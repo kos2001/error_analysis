@@ -26,6 +26,14 @@ HERMES_MAP = {
 }
 
 
+def _restrict_perms() -> None:
+    """서비스 계정 비밀(Jira 토큰/PAT, OpenRouter 키)이 담길 수 있으므로 0600으로 제한."""
+    try:
+        os.chmod(CONFIG_FILE, 0o600)
+    except OSError:
+        pass
+
+
 def _load_json() -> dict:
     if CONFIG_FILE.exists():
         try:
@@ -57,6 +65,7 @@ def save(jira: dict | None, hermes: dict | None) -> dict:
             os.environ[env_key] = v
     CONFIG_FILE.parent.mkdir(exist_ok=True)
     CONFIG_FILE.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
+    _restrict_perms()
     return status()
 
 
@@ -67,6 +76,7 @@ def set_env(key: str, value: str) -> None:
     os.environ[key] = value
     CONFIG_FILE.parent.mkdir(exist_ok=True)
     CONFIG_FILE.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
+    _restrict_perms()
 
 
 def status() -> dict:

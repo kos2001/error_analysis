@@ -147,11 +147,15 @@ export default function Onboarding({ status, onDone }: { status: any; onDone: ()
           </div>
         </section>
 
-        {/* Jira */}
+        {/* Jira (서비스 계정) */}
         <section className="bg-white rounded-2xl border border-slate-200 p-6 mb-5 shadow-sm">
-          <div className="flex items-center justify-between mb-4">
-            <h2 className="font-bold text-indigo-700">🔗 Jira 연동</h2>
+          <div className="flex items-center justify-between mb-3">
+            <h2 className="font-bold text-indigo-700">🔗 Jira 연동 (서비스 계정)</h2>
             <span className={`text-xs px-2 py-0.5 rounded-full ${jiraReady ? "bg-emerald-100 text-emerald-700" : "bg-slate-100 text-slate-500"}`}>{jiraReady ? "준비됨" : "미설정"}</span>
+          </div>
+          <div className="text-[11px] text-amber-700 bg-amber-50 border border-amber-200 rounded-lg p-2.5 mb-3 leading-relaxed">
+            ⚠️ <b>전용 서비스(봇) 계정</b>을 사용하세요. RCA 댓글이 이 계정 명의로 게시됩니다.<br />
+            최소 권한만 부여: <b>해당 프로젝트 조회 + 댓글 추가(Add Comments)</b>. 개인 계정·관리자 권한은 지양하세요.
           </div>
           <div className="space-y-3">
             <Field label="Base URL" value={baseUrl} onChange={(e) => setBaseUrl(e.target.value)} placeholder="https://your-domain.atlassian.net" />
@@ -162,9 +166,9 @@ export default function Onboarding({ status, onDone }: { status: any; onDone: ()
             </div>
             {authType === "basic" ? (
               <>
-                <Field label="Email" value={email} onChange={(e) => setEmail(e.target.value)} placeholder="you@company.com" />
+                <Field label="서비스 계정 Email" value={email} onChange={(e) => setEmail(e.target.value)} placeholder="rca-bot@company.com" />
                 <Field label="API Token" type="password" value={apiToken} onChange={(e) => setApiToken(e.target.value)}
-                  placeholder={j.has_secret ? "설정됨 — 변경 시에만 입력" : "Atlassian API token"} hint={j.has_secret ? "비워두면 기존 토큰 유지" : undefined} />
+                  placeholder={j.has_secret ? "설정됨 — 변경 시에만 입력" : "서비스 계정 Atlassian API token"} hint={j.has_secret ? "비워두면 기존 토큰 유지" : undefined} />
               </>
             ) : (
               <Field label="Personal Access Token" type="password" value={pat} onChange={(e) => setPat(e.target.value)}
