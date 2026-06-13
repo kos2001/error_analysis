@@ -72,11 +72,14 @@ def _query_text(rec: dict) -> str:
     """질의 표현 — 이슈 제기 + (진행 중 이슈에 있다면) 분석 단계 내용.
 
     해결 필드(resolution/workaround)는 미해결 질의에 존재할 수 없으므로 사용 안 함.
+    investigation: 진행 중 이슈의 조사·트리아지 코멘트에서 추출한 관찰/분석 단계
+    신호(관찰 가능 — 확정 근본원인 아님). 이슈가 진행될수록 질의 표현이 풍부해진다.
     """
     return " ".join(p for p in [
         rec.get("summary", ""), rec.get("symptom", ""),
         rec.get("chip", ""), rec.get("category", ""),
         rec.get("debug_approach", ""), rec.get("root_cause", ""),
+        rec.get("investigation", ""),
     ] if p)
 
 

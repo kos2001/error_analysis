@@ -432,6 +432,21 @@ def severity_to_priority(sev: str) -> str:
 
 
 @dataclass
+class Comment:
+    """이슈에 부착되는 협업 스레드의 단일 코멘트.
+
+    kind: reporter(고객/리포터 후속) | triage(엔지니어 1차 분류) |
+          investigation(조사 진행 기록) | analysis(시니어 RCA) |
+          resolution(해결/검증 마무리)
+    day_offset: 발견일 기준 경과일(스레드 시간 순서 표현용).
+    """
+    author: str
+    kind: str
+    body: str
+    day_offset: int = 0
+
+
+@dataclass
 class Issue:
     summary: str
     description: str
@@ -447,6 +462,7 @@ class Issue:
     severity: str
     category: str
     analysis_comment: Optional[str] = None  # 해결된 이슈에만
+    comments: list[Comment] = field(default_factory=list)  # 협업 스레드(전 상태)
     meta: dict = field(default_factory=dict)
 
 
@@ -505,6 +521,149 @@ def _build_analysis_comment(t: FailureTemplate, engineer: str, method: str) -> s
 ----
 _주니어 엔지니어 참고_: 이 케이스는 '{t.category}' 분류의 전형적 패턴입니다. 동일 분류의 다른 이슈에서도 위 디버깅 접근을 우선 적용해 보세요.
 """
+
+
+# ---------------------------------------------------------------------------
+# 협업 스레드(코멘트) 생성 — 각 이슈를 실제 협업 흐름처럼 다중 코멘트로 구성
+#   reporter(고객 후속) → triage(1차 분류) → investigation(조사) →
+#   analysis(시니어 RCA, Resolved) → resolution(해결/검증) → reporter(검증 완료)
+# ---------------------------------------------------------------------------
+
+# 담당 엔지니어(트리아지/조사/해결 작성자) — 시니어와 구분되는 오너 풀
+OWNER_ENGINEERS = [
+    "owner.jeon", "owner.bae", "owner.noh", "owner.ryu", "owner.gil",
+]
+
+# 리포터 추가 정보 변형(증상/환경 보강)
+_REPORTER_FOLLOWUP_NOTES = [
+    "동일 증상이 다른 단위 2대에서도 재현됩니다. 로트(lot) 무관하게 발생하는 것으로 보입니다.",
+    "현장 보드 로그를 추가로 확보했습니다. 발생 직전 RF/전원 이벤트가 동반되는 패턴입니다.",
+    "양산 라인 합격 샘플에서도 간헐 재현되어, 검사 커버리지 밖의 corner로 판단됩니다.",
+    "고객 QA에서 동일 빈도로 카운트됩니다. 출하 게이트에 영향이 있어 우선 검토 요청드립니다.",
+]
+
+# 트리아지 결론 변형
+_TRIAGE_NOTES = [
+    "증상 재현 확인했고 분류/우선순위 그대로 유지합니다. 담당 배정 후 재현 환경부터 좁히겠습니다.",
+    "초기 분류 적절합니다. 로그상 단서가 명확해 우선 trigger 시점부터 특성화하겠습니다.",
+    "재현율이 조건 의존적이라 통계적 특성화 먼저 진행합니다. HW/FW 경계부터 확인합니다.",
+]
+
+# 조사 진행 변형
+_INVESTIGATION_NOTES = [
+    "정상/실패 케이스를 1개 변수로 좁혀 corner를 특성화했습니다. 가설이 좁혀집니다.",
+    "비동기 두 경로의 ordering을 trace로 정렬해 race 후보를 확인 중입니다.",
+    "logic analyzer로 경계 신호를 캡처, trigger 시점을 분리했습니다. 증상이 아닌 원인 쪽으로 접근.",
+    "datasheet 마진 대비 실측 corner를 비교 중 — spec 위반이 아닌 stack-up 가능성에 무게.",
+]
+
+
+def _short(text: str, limit: int = 160) -> str:
+    """근본원인/해결책 본문을 코멘트용으로 1문장 수준으로 축약."""
+    head = text.strip().split(". ")[0].split(". ")[0]
+    head = head.replace("\n", " ").strip()
+    if len(head) > limit:
+        head = head[:limit].rstrip() + "…"
+    return head
+
+
+def _first_log_line(log_excerpt: str) -> str:
+    return (log_excerpt or "").strip().splitlines()[0] if log_excerpt.strip() else ""
+
+
+def _build_comment_thread(t: FailureTemplate, *, status: str, reporter: str,
+                          fw: str, priority: str, found_date: str,
+                          analysis_comment: Optional[str],
+                          crng: random.Random) -> list[Comment]:
+    """이슈 상태에 맞는 협업 코멘트 스레드를 결정론적으로 생성한다.
+
+    crng는 이슈별 파생 RNG(메인 생성 스트림과 분리) — 기존 배치 재현성 보존.
+    """
+    owner = crng.choice(OWNER_ENGINEERS)
+    log_line = _first_log_line(t.log_excerpt)
+    thread: list[Comment] = []
+    d = 1  # 발견일 기준 경과일 누적
+
+    # 1) 고객/리포터 후속
+    extra_repro = crng.choice(t.repro)
+    thread.append(Comment(
+        author=reporter, kind="reporter", day_offset=d,
+        body=(
+            f"h3. 📩 고객 추가 정보 (보고자: {reporter})\n\n"
+            f"*추가 재현 조건*: {extra_repro}\n"
+            f"*추가 관찰*: {crng.choice(_REPORTER_FOLLOWUP_NOTES)}\n"
+            f"*요청*: '{t.severity}' 영향도 기준 우선 분석 부탁드립니다."
+        ),
+    ))
+
+    # 2) 엔지니어 1차 트리아지
+    d += crng.randint(1, 3)
+    triage_body = (
+        f"h3. 🧰 1차 트리아지 (담당: {owner})\n\n"
+        f"{crng.choice(_TRIAGE_NOTES)}\n\n"
+        f"*분류*: {t.category} / *우선순위*: {priority}\n"
+    )
+    if log_line:
+        triage_body += f"*핵심 단서(로그)*: {{{{{log_line}}}}}\n"
+    triage_body += f"*담당 배정*: {owner}"
+    thread.append(Comment(author=owner, kind="triage", day_offset=d, body=triage_body))
+
+    # 3) 조사 진행(진행중/해결 이슈) — 해결 이슈는 2건, 진행중은 1건
+    if status in ("In Progress", "Resolved"):
+        n_inv = 2 if status == "Resolved" else 1
+        picks = crng.sample(_INVESTIGATION_NOTES, k=min(n_inv, len(_INVESTIGATION_NOTES)))
+        for i, note in enumerate(picks, 1):
+            d += crng.randint(1, 4)
+            # 누수 방지: 조사 단계 코멘트는 '관찰 가능한' 증상/재현 정황과 디버깅
+            # 방향만 담는다. 확정 근본원인(t.root_cause)은 시니어 RCA(analysis)
+            # 단계 전까지 알 수 없으므로 인용하지 않는다.
+            inv_body = (
+                f"h3. 🔬 조사 진행 #{i} (담당: {owner})\n\n"
+                f"{note}\n\n"
+                f"*관찰 재정리*: {_short(t.symptom, 140)}\n"
+                f"*확인된 재현 정황*: {_short(t.repro[i % len(t.repro)], 80)}"
+            )
+            if status == "In Progress" and i == n_inv:
+                inv_body += "\n\n_상태: 원인 가설 검증 중 — 수정 방향 확정 후 패치 예정._"
+            thread.append(Comment(author=owner, kind="investigation",
+                                  day_offset=d, body=inv_body))
+
+    # 4) 시니어 RCA(해결 이슈) — 기존 analysis_comment를 스레드에 포함
+    if status == "Resolved" and analysis_comment:
+        d += crng.randint(1, 3)
+        # analysis_comment 헤더에서 작성자 추출
+        senior = "senior"
+        first = analysis_comment.splitlines()[0]
+        if "작성: " in first:
+            senior = first.split("작성: ", 1)[1].rstrip(")")
+        thread.append(Comment(author=senior, kind="analysis",
+                              day_offset=d, body=analysis_comment))
+
+    # 5) 해결/검증 마무리 + 6) 고객 검증 완료 (해결 이슈)
+    if status == "Resolved":
+        d += crng.randint(1, 3)
+        thread.append(Comment(
+            author=owner, kind="resolution", day_offset=d,
+            body=(
+                f"h3. ✅ 해결 및 검증 (담당: {owner})\n\n"
+                f"*적용 수정*: {_short(t.resolution, 220)}\n"
+                f"*검증*: {fw} 빌드에서 회귀 시나리오('{_short(t.repro[0], 60)}') 통과, "
+                f"재현율 0건 확인.\n"
+                f"*상호운용/회귀*: {t.category} 관련 테스트 매트릭스 통과.\n"
+                f"*릴리스*: {fw} 반영."
+            ),
+        ))
+        d += crng.randint(2, 7)
+        thread.append(Comment(
+            author=reporter, kind="reporter", day_offset=d,
+            body=(
+                f"h3. 🙌 고객 검증 완료 (보고자: {reporter})\n\n"
+                f"제공된 {fw} 패치 적용 후 현장 모니터링에서 재발 없음 확인했습니다. "
+                f"이슈 종료에 동의합니다. 분석/대응 감사합니다."
+            ),
+        ))
+
+    return thread
 
 
 def generate_issues(target_count: int = 50, seed: int = 20260608,
@@ -569,6 +728,15 @@ def generate_issues(target_count: int = 50, seed: int = 20260608,
             method = rng.choice(DEBUG_METHOD_NOTES)
             analysis = _build_analysis_comment(t, engineer, method)
 
+        # 협업 스레드: 메인 rng 스트림과 분리된 이슈별 파생 rng로 생성
+        # (이미 push된 배치의 핵심 필드 재현성을 보존하기 위함)
+        comment_seed = int(
+            hashlib.sha1(f"{seed}:{idx}:{summary}".encode()).hexdigest()[:8], 16)
+        comments = _build_comment_thread(
+            t, status=status, reporter=reporter, fw=fw,
+            priority=severity_to_priority(t.severity), found_date=found_date,
+            analysis_comment=analysis, crng=random.Random(comment_seed))
+
         issues.append(Issue(
             summary=summary,
             description=description,
@@ -584,6 +752,7 @@ def generate_issues(target_count: int = 50, seed: int = 20260608,
             severity=t.severity,
             category=t.category,
             analysis_comment=analysis,
+            comments=comments,
             meta={"host": host, "found_date": found_date},
         ))
 

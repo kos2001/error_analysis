@@ -84,6 +84,34 @@ def _comment_block(comment: str, label: str) -> str:
 
 BOT_COMMENT_MARKER = "자동 근본원인 분석"  # RCA-bot 댓글 식별 (scripts/rca_comment.py)
 
+# 협업 스레드 중 '관찰/분석 단계' 코멘트 식별 — 미해결 이슈도 가질 수 있는 신호.
+# (해결 단계인 ✅/🙌 와 시니어 RCA(🔍)는 질의 신호로 쓰지 않는다: 미해결 질의엔
+#  존재할 수 없는 '정답' 정보이므로 — 단계 인지 매칭 원칙)
+_INVESTIGATION_HEADERS = ("🔬 조사 진행", "🧰 1차 트리아지", "📩 고객 추가 정보")
+_WIKI_MARKUP_RE = re.compile(r"^h\d\.\s*|\*|\{{2,}|\}{2,}|_")
+
+
+def _thread_investigation(comments: list[str]) -> str:
+    """관찰/분석 단계 코멘트(조사·트리아지·고객 후속) 본문을 질의용 신호로 합친다.
+
+    헤더 줄과 위키 마크업·작성자 라벨을 제거한 평문만 추출한다.
+    """
+    out: list[str] = []
+    for c in comments:
+        head = c.strip().splitlines()[0] if c.strip() else ""
+        if not any(h in head for h in _INVESTIGATION_HEADERS):
+            continue
+        for line in c.splitlines()[1:]:
+            s = _WIKI_MARKUP_RE.sub("", line).strip()
+            # "라벨: 값" 형태는 값만, 작성자/상태 메타 줄은 건너뜀
+            if not s or s.startswith(("담당 배정", "분류", "우선순위", "요청", "상태:")):
+                continue
+            if ":" in s and s.split(":", 1)[0].strip() in (
+                    "관찰 재정리", "확인된 재현 정황", "추가 재현 조건", "추가 관찰", "핵심 단서(로그)"):
+                s = s.split(":", 1)[1].strip()
+            out.append(s)
+    return " ".join(out)
+
 
 def parse_issue(raw: dict) -> dict:
     """raw 이슈 → 정규화 레코드 (필드 + 엔티티 + 검색용 본문).
@@ -110,6 +138,8 @@ def parse_issue(raw: dict) -> dict:
         "root_cause": _comment_block(comment, "근본 원인 (Root Cause)"),
         "resolution": _comment_block(comment, "적용 해결책 (Resolution)"),
         "workaround": _comment_block(comment, "임시 우회책 (Workaround)"),
+        # 관찰/분석 단계 코멘트 신호 — 미해결 이슈도 보유 가능(단계 인지 매칭 질의용)
+        "investigation": _thread_investigation(comments),
     }
     # 검색 결과로 반환할 본문 (봇 댓글 제외)
     rec["context_text"] = (

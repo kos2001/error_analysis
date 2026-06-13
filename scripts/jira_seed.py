@@ -190,6 +190,11 @@ def write_backups(issues: list[Issue]) -> None:
         "severity": it.severity,
         "category": it.category,
         "analysis_comment": it.analysis_comment,
+        "comments": [
+            {"author": c.author, "kind": c.kind,
+             "day_offset": c.day_offset, "body": c.body}
+            for c in it.comments
+        ],
         "meta": it.meta,
     } for it in issues]
     BACKUP_JSON.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
@@ -201,12 +206,24 @@ def write_backups(issues: list[Issue]) -> None:
             "Summary", "Issue Type", "Priority", "Component", "Labels",
             "Status", "Description", "Comment",
         ])
+        # Jira CSV는 'Comment' 컬럼을 여러 개 두면 각각 별도 코멘트로 임포트된다.
+        # 가장 코멘트가 많은 이슈 기준으로 컬럼 수를 맞춘다.
+        max_comments = max((len(it.comments) for it in issues), default=0)
+        if max_comments > 1:
+            f.seek(0)
+            f.truncate()
+            w.writerow([
+                "Summary", "Issue Type", "Priority", "Component", "Labels",
+                "Status", "Description",
+            ] + ["Comment"] * max_comments)
         for it in issues:
-            comment = it.analysis_comment or ""
+            bodies = [c.body for c in it.comments] or ([it.analysis_comment]
+                                                       if it.analysis_comment else [])
+            bodies += [""] * (max(max_comments, 1) - len(bodies))
             w.writerow([
                 it.summary, it.issue_type, it.priority, it.component,
-                " ".join(it.labels), it.status, it.description, comment,
-            ])
+                " ".join(it.labels), it.status, it.description,
+            ] + bodies)
     print(f"백업 생성: {BACKUP_JSON.relative_to(ROOT)} , {IMPORT_CSV.relative_to(ROOT)}")
 
 
