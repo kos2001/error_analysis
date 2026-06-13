@@ -94,6 +94,9 @@ class Recommender:
     # 0.48 근거: paraphrase 정답 중 0.485/0.496이 0.50 직하에서 차단(FN)되는 반면,
     # 무관 질의 분포는 0.474 이하(예외 n06 0.503은 어느 임계든 통과). 측정 2026-06-11.
     doc_analysis: bool = True            # KB 문서에 분석 단계(디버깅 접근/근본 원인) 포함
+    verified_tiebreak: float = 1e-4      # 검증 완료(✅+🙌) 사례 동점 시 우선 노출(M2).
+    # 1e-4 근거: 텍스트/메타 신호(RRF≈0.03, boost 0.15)를 절대 덮지 않는 크기 —
+    # 점수가 사실상 같을 때만 검증 사례를 위로 올리는 순수 tie-breaker.
     _embedder: object = field(default=None, repr=False)
     _kb_emb: object = field(default=None, repr=False)
 
@@ -102,6 +105,7 @@ class Recommender:
         self._bm25 = BM25Okapi([tokenize(d) for d in self._docs])
         self._kb_ents = [query_entities(r) for r in self.kb]
         self._keys = [r["key"] for r in self.kb]
+        self._kb_verified = [bool(r.get("verified")) for r in self.kb]
         if self.method in ("embed", "hybrid_embed"):
             self._init_embed()
         elif self.signals:
@@ -203,6 +207,11 @@ class Recommender:
             fused = self._rrf(lists, self.rrf_k, weights=[2.0, 0.5])
             self._apply_boost(fused, query_rec)
 
+        # 검증 완료 사례 동점 tie-break(M2) — 실신호를 못 덮는 크기로만 가산.
+        if self.verified_tiebreak:
+            for i in list(fused):
+                if self._kb_verified[i]:
+                    fused[i] += self.verified_tiebreak
         ranked = sorted(fused.items(), key=lambda x: -x[1])
         if exclude_key is not None:
             ranked = [(i, s) for i, s in ranked if self._keys[i] != exclude_key]
@@ -229,6 +238,7 @@ class Recommender:
                 "workaround": r.get("workaround", ""),
                 "debug_approach": r.get("debug_approach", ""),
                 "entity_overlap": len(q_ents & self._kb_ents[i]),
+                "verified": self._kb_verified[i],
             }
             if cos is not None:
                 m["embed_cos"] = round(float(cos[i]), 3)
@@ -254,11 +264,15 @@ class Recommender:
             from collections import Counter
             classes = Counter(template_key(m["summary"]) for m in matches)
             top_class, cnt = classes.most_common(1)[0]
-            rep = next(m for m in matches if template_key(m["summary"]) == top_class)
+            in_class = [m for m in matches if template_key(m["summary"]) == top_class]
+            # 대표 사례: 동일 클래스 내 '검증 완료' 사례를 우선(없으면 최상위)(M2).
+            rep = next((m for m in in_class if m["verified"]), in_class[0])
             proposal = {
                 "root_cause": rep["root_cause"], "resolution": rep["resolution"],
                 "workaround": rep["workaround"], "based_on": rep["key"],
                 "confidence": round(cnt / len(matches), 2),
+                # 검증 신뢰도: 다수결 비율 + 대표 사례 검증 여부(댓글 신뢰도 톤 산출용).
+                "based_on_verified": rep["verified"],
             }
         return {"matches": matches, "proposal": proposal, "coverage": coverage, "gate": gate}
 

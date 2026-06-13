@@ -91,6 +91,10 @@ _INVESTIGATION_HEADERS = ("🔬 조사 진행", "🧰 1차 트리아지", "📩 
 _WIKI_MARKUP_RE = re.compile(r"^h\d\.\s*|\*|\{{2,}|\}{2,}|_")
 
 
+def _has_marker(comments: list[str], marker: str) -> bool:
+    return any(marker in c for c in comments)
+
+
 def _thread_investigation(comments: list[str]) -> str:
     """관찰/분석 단계 코멘트(조사·트리아지·고객 후속) 본문을 질의용 신호로 합친다.
 
@@ -140,6 +144,10 @@ def parse_issue(raw: dict) -> dict:
         "workaround": _comment_block(comment, "임시 우회책 (Workaround)"),
         # 관찰/분석 단계 코멘트 신호 — 미해결 이슈도 보유 가능(단계 인지 매칭 질의용)
         "investigation": _thread_investigation(comments),
+        # 검증 신호: 수정이 검증(✅)되고 고객 확인(🙌)까지 끝난 '신뢰 가능한' 해결 사례.
+        # 동점 시 우선 노출 + 제안 신뢰도 근거(M2). 두 코멘트가 모두 있어야 verified.
+        "verified": _has_marker(comments, "✅ 해결 및 검증")
+                    and _has_marker(comments, "🙌 고객 검증 완료"),
     }
     # 검색 결과로 반환할 본문 (봇 댓글 제외)
     rec["context_text"] = (
