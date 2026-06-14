@@ -329,11 +329,44 @@ def suggest(reco=None, records: list[dict] | None = None) -> list[dict]:
     return out
 
 
+def _build_recommender(resolved):
+    """cron/오프라인용 추천기 — 서버 없이 군집화(suggest)에 쓸 임베딩 보유. 리랭커 off(비용 0)."""
+    import os as _os
+    from recommender import Recommender
+    kw = {kw_: float(_os.environ[env]) for kw_, env in
+          (("gate_cos", "RVP_GATE_COS"), ("boost", "RVP_BOOST")) if _os.getenv(env)}
+    return Recommender(resolved, method=_os.getenv("RVP_RECO_METHOD", "hybrid_embed"),
+                       rerank=False, **kw)
+
+
+def run_full(save: bool = True) -> dict:
+    """cron 진입점 — 측정·진단(L1) + 지식 변경 제안(L3) 큐 병합. 서버 불필요, 지식 불변.
+
+    L2(파라미터 적용)·L3 실행은 포함하지 않는다 — 사람이 검토 후 적용/실행한다.
+    """
+    import improve_queue
+    resolved = _resolved_kb()
+    out = run(save=save)                       # 측정·진단·리포트(L1)
+    suggestions, synced = [], {"added": 0, "counts": improve_queue.counts()}
+    try:
+        reco = _build_recommender(resolved)
+        suggestions = suggest(reco=reco, records=resolved)
+        synced = improve_queue.sync(suggestions)
+    except Exception as e:
+        out["suggest_error"] = str(e)[:160]
+    out["suggestions"] = {"generated": len(suggestions), **synced}
+    return out
+
+
 def main() -> int:
-    out = run()
-    print(f"[self_improve] {out['metrics']['ts']} — 제안 {len(out['recommendations'])}건")
+    out = run_full()
+    m = out["metrics"]
+    print(f"[self_improve] {m['ts']} — 유용성 {m['helpful_rate']} · 공백 {m['gap_events']} · "
+          f"큐레이션 {m['curated']} · 기사 {m['known_issues']}")
     for r in out["recommendations"]:
-        print(f"  [{r['priority']}] {r['area']}: {r['action']}")
+        print(f"  진단 [{r['priority']}] {r['area']}: {r['action']}")
+    s = out["suggestions"]
+    print(f"[self_improve] 제안 생성 {s['generated']} · 신규 {s.get('added', 0)} · 큐 {s.get('counts')}")
     return 0
 
 
