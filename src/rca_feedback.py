@@ -56,6 +56,13 @@ def relevant_edits(category: str = "", template: str = "", n: int = 2, max_len: 
              "final_body": (e.get("final_body") or "")[:max_len]} for e in matched[-n:]]
 
 
+def recent_edits(n: int = 5, max_len: int = 500) -> list[dict]:
+    """클래스 무관 최근 사람 수정 n건 — /rca/feedback 표시용(전역 최근순)."""
+    edits = [e for e in _load() if e.get("edited")]
+    return [{"key": e["key"], "summary": e.get("summary", ""),
+             "final_body": (e.get("final_body") or "")[:max_len]} for e in edits[-n:]]
+
+
 def _section(md: str, *titles: str) -> str:
     """마크다운 '### ...제목...' 섹션 본문 추출(다음 ### 또는 끝까지)."""
     import re
