@@ -678,6 +678,16 @@ def recommend(req: RecommendRequest):
         "coverage": result.get("coverage", bool(result["matches"])),
         "gate": result.get("gate"),
     }
+    # 지식 공백 관측성(P3-8): coverage 미통과 질의를 공백 신호로 기록(자기 개선 loop 입력)
+    if not out["coverage"]:
+        try:
+            import knowledge_gaps
+            gate = result.get("gate") or {}
+            knowledge_gaps.record(query_rec, reason="no_coverage",
+                                  template=template_key(query_rec.get("summary", "")),
+                                  top_score=gate.get("top_score") if isinstance(gate, dict) else None)
+        except Exception:
+            pass
     # 게이트 미통과 시 LLM 설명 생성 안 함 (무관 사례 기반 환각 방지)
     if req.explain and result["matches"] and out["coverage"]:
         ex = _llm_explain(query_rec, result["matches"])
@@ -1074,6 +1084,16 @@ def knowledge_negative_get(key: str):
     """특정 이슈의 기각된 가설 목록."""
     import negative_knowledge
     return {"key": key, "rejected": negative_knowledge.get(key), "stats": negative_knowledge.stats()}
+
+
+# ---------------------------------------------------------------------------
+# 지식 공백 관측성 (P3-8)
+# ---------------------------------------------------------------------------
+@app.get("/knowledge/gaps")
+def knowledge_gaps_report(top: int = 20):
+    """지식 공백 대시보드 — 자주 질의되나 사례 없는(coverage 미통과) 영역 집계."""
+    import knowledge_gaps
+    return knowledge_gaps.report(top=top)
 
 
 @app.post("/reco/reload")
