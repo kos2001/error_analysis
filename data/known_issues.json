@@ -1,1 +1,29 @@
-{"schema_version":1,"articles":[]}
+{
+  "schema_version": 1,
+  "articles": [
+    {
+      "id": "KI-1",
+      "title": "[ISOCELL-HP9] HDR 모드에서 움직이는 피사체에 motion artifact(ghosting) (Orion Telecom / Cust",
+      "failure_summary": "",
+      "root_cause": "long/short exposure 간 시간차에서 발생하는 본질적 motion이며, deghosting weight map이 고대비 edge에서 과소평가됨. sensor의 line-interleaved HDR readout timing 보고값이 ISP 합성 모듈에 부정확하게 전달.",
+      "resolution": "sensor가 ISP에 정확한 exposure midpoint timestamp를 embedded line으로 전달하도록 수정, deghosting weight를 edge gradient 기반으로 재튜닝.",
+      "workaround": "HDR 비활성화 또는 in-sensor HDR(DCG) 모드 사용.",
+      "members": [
+        "LSI-116",
+        "LSI-12",
+        "LSI-159",
+        "LSI-75"
+      ],
+      "chips": [
+        "ISOCELL-HP9"
+      ],
+      "categories": [
+        "Firmware"
+      ],
+      "author": "oseok.kim2001@gmail.com",
+      "created_at": "2026-06-14T09:03:54",
+      "updated_at": "2026-06-14T09:03:54",
+      "schema_version": 1
+    }
+  ]
+}
