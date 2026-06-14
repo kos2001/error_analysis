@@ -1,0 +1,33 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- macOS launchd 데몬 — 자기 개선 loop 매일 09:00 실행.
+     설치(사용자 LaunchAgent, sudo 불필요):
+       1) 이 파일의 __REPO__ 를 저장소 절대경로로 치환:
+          sed "s#__REPO__#$(pwd)#" scripts/com.lsi.selfimprove.plist > ~/Library/LaunchAgents/com.lsi.selfimprove.plist
+       2) 로드:   launchctl load ~/Library/LaunchAgents/com.lsi.selfimprove.plist
+       3) 확인:   launchctl list | grep com.lsi.selfimprove
+     제거(되돌리기):
+          launchctl unload ~/Library/LaunchAgents/com.lsi.selfimprove.plist
+          rm ~/Library/LaunchAgents/com.lsi.selfimprove.plist -->
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.lsi.selfimprove</string>
+    <key>ProgramArguments</key>
+    <array>
+        <string>__REPO__/scripts/self_improve_cron.sh</string>
+    </array>
+    <key>StartCalendarInterval</key>
+    <dict>
+        <key>Hour</key>
+        <integer>9</integer>
+        <key>Minute</key>
+        <integer>0</integer>
+    </dict>
+    <key>StandardOutPath</key>
+    <string>__REPO__/logs/launchd.out.log</string>
+    <key>StandardErrorPath</key>
+    <string>__REPO__/logs/launchd.err.log</string>
+    <key>RunAtLoad</key>
+    <false/>
+</dict>
+</plist>
