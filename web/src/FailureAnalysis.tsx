@@ -13,6 +13,7 @@ type Match = {
   root_cause: string; resolution: string; workaround: string; debug_approach: string;
   embed_cos?: number; entity_overlap?: number; bm25_raw?: number; rerank_score?: number; verified?: boolean;
   known_issue?: { id: string; title: string };   // 소속 고장모드 기사(P2-4)
+  lifecycle?: { state: string; superseded_by: string; freshness: number | null; fw_version: string; warnings: string[] };  // 수명주기(P2-5)
 };
 type Proposal = { root_cause: string; resolution: string; workaround: string; based_on: string; confidence: number };
 type RecoResp = { query: any; matches: Match[]; proposal: Proposal | null; coverage: boolean; explanation?: string; explanation_citations?: string[]; explanation_dropped_citations?: string[] };
@@ -559,6 +560,12 @@ export default function FailureAnalysis({ onQueueChange }: { onQueueChange?: () 
                               )}
                               {m.known_issue && (
                                 <span className="text-[10px] px-1.5 py-0.5 rounded bg-indigo-50 text-indigo-600" title={`고장모드 기사: ${m.known_issue.title}`}>📚 {m.known_issue.id}</span>
+                              )}
+                              {m.lifecycle && m.lifecycle.warnings.length > 0 && (
+                                <span className="text-[10px] px-1.5 py-0.5 rounded bg-amber-50 text-amber-700"
+                                  title={`${m.lifecycle.warnings.join(" · ")}${m.lifecycle.fw_version ? ` · FW ${m.lifecycle.fw_version}` : ""}`}>
+                                  ⚠ {m.lifecycle.warnings[0]}
+                                </span>
                               )}
                               <span className="ml-auto text-[10px] text-slate-400 flex items-center gap-2" title="관련도=reranker 재순위 점수(카드 정렬 기준) · 임베딩=bi-encoder 코사인">
                                 {m.rerank_score != null ? (
