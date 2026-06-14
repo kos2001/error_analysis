@@ -707,13 +707,58 @@ def recommend(req: RecommendRequest):
 BOT_MARKER = "자동 근본원인 분석"  # preprocess.BOT_COMMENT_MARKER 와 동일(파싱 제외용)
 
 
+def _convert_md_tables(md: str) -> str:
+    """마크다운 표 → Jira wiki 표. 헤더는 '||a||b||', 데이터는 '|a|b|', 구분행(|---|)은 제거.
+
+    api/2 wiki엔 마크다운의 '|---|' 구분행 개념이 없어 그대로 두면 쓰레기 행으로 렌더된다.
+    """
+    def _cells(line: str) -> list[str]:
+        parts = line.strip().split("|")
+        if parts and parts[0].strip() == "":
+            parts = parts[1:]
+        if parts and parts[-1].strip() == "":
+            parts = parts[:-1]
+        return [p.strip() for p in parts]
+
+    def _is_row(line: str) -> bool:
+        return line.strip().startswith("|")
+
+    def _is_sep(line: str) -> bool:
+        c = line.strip().strip("|")
+        return bool(c) and "-" in c and all(ch in " -:|" for ch in c)
+
+    lines, out, i = md.split("\n"), [], 0
+    while i < len(lines):
+        if not _is_row(lines[i]):
+            out.append(lines[i]); i += 1
+            continue
+        j = i
+        block = []
+        while j < len(lines) and _is_row(lines[j]):
+            block.append(lines[j]); j += 1
+        sep_idx = [k for k, l in enumerate(block) if _is_sep(l)]
+        if sep_idx:                                   # 진짜 표(구분행 존재)
+            header_idx = sep_idx[0] - 1
+            for k, row in enumerate(block):
+                if _is_sep(row):
+                    continue
+                cs = _cells(row)
+                out.append("||" + "||".join(cs) + "||" if k == header_idx
+                           else "|" + "|".join(cs) + "|")
+        else:                                         # 구분행 없음 → 표 아님, 원본 유지
+            out.extend(block)
+        i = j
+    return "\n".join(out)
+
+
 def _md_to_jira(md: str) -> str:
     """게시 직전 마크다운 → Jira wiki markup 변환(api/2가 wiki를 렌더하므로).
 
-    헤딩 #..# → h1.~h6., **굵게** → *굵게*, '- ' 글머리 → '* '. 본문/큐/미리보기는
-    마크다운 정본을 유지하고, 게시 시점에만 변환한다.
+    헤딩 #..# → h1.~h6., **굵게** → *굵게*, '- ' 글머리 → '* ', 표 → Jira 표. 본문/큐/
+    미리보기는 마크다운 정본을 유지하고, 게시 시점에만 변환한다.
     """
     import re
+    md = _convert_md_tables(md)                       # 표 먼저 변환(헤딩/글머리 처리 전)
     lines = []
     for ln in md.split("\n"):
         m = re.match(r"^(#{1,6})\s+(.*)$", ln)
