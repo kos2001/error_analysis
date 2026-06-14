@@ -725,18 +725,38 @@ class KeyBody(BaseModel):
     key: str
 
 
+def _not_queued(code: str, reason: str, **extra) -> dict:
+    """큐 미진입 사유를 구조화해 반환 — UI/개발자가 '왜 안 들어갔는지' 명확히 알도록."""
+    return {"queued": False, "reason_code": code, "reason": reason, "error": reason, **extra}
+
+
+def _queue_result(saved: dict) -> dict:
+    """upsert 결과를 queued/reason으로 표준화(신규 pending vs 이미 승인됨 구분)."""
+    if saved.get("state") == "approved":
+        cid = saved.get("comment_id", "")
+        return {"queued": False, "reason_code": "already_approved",
+                "reason": f"이미 승인·게시된 이슈입니다{f' (댓글 #{cid})' if cid else ''} — 새 초안을 만들지 않았습니다.",
+                "item": saved, "counts": rca_queue.counts()}
+    return {"queued": True, "reason_code": "queued",
+            "reason": "승인 대기 큐에 추가됨 (상단 '📤 승인 대기'에서 검토·게시).",
+            "item": saved, "counts": rca_queue.counts()}
+
+
 @app.post("/rca/draft")
 def rca_draft(req: KeyBody):
     """미해결 이슈에 대한 RCA 댓글 초안 생성 → 승인 큐(pending)에 적재. Jira 쓰기 없음."""
     st = _reco_state()
     rec = st["by_key"].get(req.key)
     if not rec:
-        return {"error": f"이슈 {req.key} 없음"}
+        return _not_queued("not_found", f"이슈 {req.key} 를 KB에서 찾을 수 없습니다.")
     if rec.get("status") == RESOLVED_STATUS:
-        return {"error": "이미 해결된 이슈입니다(미해결 이슈만 대상)."}
+        return _not_queued("resolved", "이미 해결(완료)된 이슈입니다 — 미해결 이슈만 RCA 대상입니다.")
     result = st["reco"].recommend(rec, k=4, exclude_key=req.key)
     if not result["matches"] or not result.get("coverage"):
-        return {"error": "유사 사례 없음(coverage 미통과) — 시니어 검토 필요, 자동 게시 대상 아님."}
+        return _not_queued("no_coverage",
+                           "유사 과거 사례가 없습니다(coverage 게이트 미통과). 근거 없는 자동 RCA를 막기 위해 "
+                           "초안을 만들지 않았습니다 — 시니어 직접 검토가 필요합니다. (대안: '✨ AI 심층 분석' 후 "
+                           "'📤 이 분석을 RCA로'는 게이트 없이 큐에 넣을 수 있습니다.)")
     p = result["proposal"] or {}
     conf = p.get("confidence", 0)
     verified = bool(p.get("based_on_verified"))
@@ -751,10 +771,7 @@ def rca_draft(req: KeyBody):
         "created_at": _dt.datetime.now().isoformat(timespec="seconds"),
         "state": "pending",
     }
-    saved = rca_queue.upsert(item)
-    # 이미 승인·게시된 이슈면 upsert가 기존 approved를 반환(새 pending 안 만듦) → 정직히 알림
-    return {"item": saved, "counts": rca_queue.counts(),
-            "already_approved": saved.get("state") == "approved"}
+    return _queue_result(rca_queue.upsert(item))
 
 
 class AnalysisDraftBody(BaseModel):
@@ -769,11 +786,11 @@ def rca_draft_from_analysis(req: AnalysisDraftBody):
     st = _reco_state()
     rec = st["by_key"].get(req.key)
     if not rec:
-        return {"error": f"이슈 {req.key} 없음"}
+        return _not_queued("not_found", f"이슈 {req.key} 를 KB에서 찾을 수 없습니다.")
     if rec.get("status") == RESOLVED_STATUS:
-        return {"error": "이미 해결된 이슈입니다(미해결 이슈만 대상)."}
+        return _not_queued("resolved", "이미 해결(완료)된 이슈입니다 — 미해결 이슈만 RCA 대상입니다.")
     if not (req.analysis_md or "").strip():
-        return {"error": "분석 본문이 비어 있습니다. 먼저 시니어 종합 분석을 생성하세요."}
+        return _not_queued("empty_analysis", "분석 본문이 비어 있습니다. 먼저 '✨ AI 심층 분석'을 생성하세요.")
     # 인용 검증: 본문/전달 키 ∩ KB 키 (환각 차단)
     valid = set(st["by_key"].keys())
     cited = sorted({k for k in (set(req.citations) | set(re.findall(r"LSI-\d+", req.analysis_md)))} & valid)
@@ -790,9 +807,7 @@ def rca_draft_from_analysis(req: AnalysisDraftBody):
         "created_at": _dt.datetime.now().isoformat(timespec="seconds"),
         "state": "pending",
     }
-    saved = rca_queue.upsert(item)
-    return {"item": saved, "counts": rca_queue.counts(),
-            "already_approved": saved.get("state") == "approved"}
+    return _queue_result(rca_queue.upsert(item))
 
 
 @app.get("/rca/pending")
