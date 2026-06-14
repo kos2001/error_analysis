@@ -27,3 +27,6 @@ data/jira_import.csv
 .playwright-mcp/
 .DS_Store
 *.log
+
+# self-improve 생성 리포트(재생성 가능)
+claudedocs/self_improve/
