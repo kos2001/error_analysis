@@ -16,12 +16,12 @@ KB 형식 변환(kb_records)은 recommender가 바로 쓰도록 rca_feedback과 
 """
 from __future__ import annotations
 
-import datetime as _dt
 import hashlib
-import json
 import os
 import re
 from pathlib import Path
+
+from json_store import read_json, write_json_atomic, now_iso as _now
 
 ROOT = Path(__file__).resolve().parent.parent
 STORE_FILE = ROOT / "data" / "knowledge_store.json"
@@ -36,29 +36,18 @@ REQUIRED = ("key", "source_issue", "content_text")
 # 저장/적재 (원자적 쓰기)
 # --------------------------------------------------------------------------- #
 def _load_envelope() -> dict:
-    if STORE_FILE.exists():
-        try:
-            d = json.loads(STORE_FILE.read_text(encoding="utf-8"))
-            if isinstance(d, dict) and isinstance(d.get("records"), list):
-                return d
-        except Exception:
-            pass
+    d = read_json(STORE_FILE, None)
+    if isinstance(d, dict) and isinstance(d.get("records"), list):
+        return d
     return {"schema_version": SCHEMA_VERSION, "records": []}
 
 
 def _save_envelope(env: dict) -> None:
-    STORE_FILE.parent.mkdir(exist_ok=True)
-    tmp = STORE_FILE.with_suffix(".json.tmp")
-    tmp.write_text(json.dumps(env, ensure_ascii=False, indent=2), encoding="utf-8")
-    os.replace(tmp, STORE_FILE)  # 원자적 교체 — 쓰기 중 손상 방지
+    write_json_atomic(STORE_FILE, env)
 
 
 def records() -> list[dict]:
     return _load_envelope()["records"]
-
-
-def _now() -> str:
-    return _dt.datetime.now().isoformat(timespec="seconds")
 
 
 def _hash(text: str) -> str:

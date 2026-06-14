@@ -11,11 +11,11 @@
 """
 from __future__ import annotations
 
-import datetime as _dt
-import json
 import os
 from collections import Counter
 from pathlib import Path
+
+from json_store import read_json, write_json_atomic, now_iso
 
 ROOT = Path(__file__).resolve().parent.parent
 STORE_FILE = ROOT / "data" / "knowledge_gaps.json"
@@ -23,21 +23,12 @@ MAX_EVENTS = int(os.getenv("RVP_GAPS_MAX_EVENTS", "5000"))  # 무한 증가 방�
 
 
 def _load() -> list:
-    if STORE_FILE.exists():
-        try:
-            d = json.loads(STORE_FILE.read_text(encoding="utf-8"))
-            if isinstance(d, list):
-                return d
-        except Exception:
-            pass
-    return []
+    d = read_json(STORE_FILE, [])
+    return d if isinstance(d, list) else []
 
 
 def _save(events: list) -> None:
-    STORE_FILE.parent.mkdir(exist_ok=True)
-    tmp = STORE_FILE.with_suffix(".json.tmp")
-    tmp.write_text(json.dumps(events, ensure_ascii=False, indent=2), encoding="utf-8")
-    os.replace(tmp, STORE_FILE)
+    write_json_atomic(STORE_FILE, events)
 
 
 def record(query: dict, *, reason: str = "no_coverage", template: str = "",
@@ -48,7 +39,7 @@ def record(query: dict, *, reason: str = "no_coverage", template: str = "",
         "chip": query.get("chip", ""), "category": query.get("category", ""),
         "template": template or "", "reason": reason, "top_score": top_score,
         "key": query.get("key", ""),
-        "created_at": _dt.datetime.now().isoformat(timespec="seconds"),
+        "created_at": now_iso(),
     }
     events = _load()
     events.append(ev)

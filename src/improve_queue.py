@@ -11,10 +11,9 @@
 """
 from __future__ import annotations
 
-import datetime as _dt
-import json
-import os
 from pathlib import Path
+
+from json_store import read_json, write_json_atomic, now_iso as _now
 
 ROOT = Path(__file__).resolve().parent.parent
 STORE_FILE = ROOT / "data" / "improve_queue.json"
@@ -22,29 +21,16 @@ STATES = ("open", "done", "dismissed")
 
 
 def _load() -> list:
-    if STORE_FILE.exists():
-        try:
-            d = json.loads(STORE_FILE.read_text(encoding="utf-8"))
-            if isinstance(d, list):
-                return d
-        except Exception:
-            pass
-    return []
+    d = read_json(STORE_FILE, [])
+    return d if isinstance(d, list) else []
 
 
 def _save(items: list) -> None:
-    STORE_FILE.parent.mkdir(exist_ok=True)
-    tmp = STORE_FILE.with_suffix(".json.tmp")
-    tmp.write_text(json.dumps(items, ensure_ascii=False, indent=2), encoding="utf-8")
-    os.replace(tmp, STORE_FILE)
+    write_json_atomic(STORE_FILE, items)
 
 
 def _sig(s: dict) -> str:
     return f"{s.get('type')}|{s.get('target')}"
-
-
-def _now() -> str:
-    return _dt.datetime.now().isoformat(timespec="seconds")
 
 
 def sync(generated: list[dict]) -> dict:

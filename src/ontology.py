@@ -16,10 +16,10 @@
 """
 from __future__ import annotations
 
-import json
-import os
 from collections import Counter
 from pathlib import Path
+
+from json_store import read_json, write_json_atomic
 
 ROOT = Path(__file__).resolve().parent.parent
 STORE_FILE = ROOT / "data" / "ontology.json"
@@ -31,25 +31,16 @@ def _load() -> dict:
     global _CACHE
     if _CACHE is not None:
         return _CACHE
-    d = {"synonyms": {}, "categories": []}
-    if STORE_FILE.exists():
-        try:
-            loaded = json.loads(STORE_FILE.read_text(encoding="utf-8"))
-            if isinstance(loaded, dict):
-                d.update({"synonyms": loaded.get("synonyms", {}) or {},
-                          "categories": loaded.get("categories", []) or []})
-        except Exception:
-            pass
+    loaded = read_json(STORE_FILE, {})
+    d = {"synonyms": (loaded.get("synonyms") or {}) if isinstance(loaded, dict) else {},
+         "categories": (loaded.get("categories") or []) if isinstance(loaded, dict) else []}
     _CACHE = d
     return d
 
 
 def _save(d: dict) -> None:
     global _CACHE
-    STORE_FILE.parent.mkdir(exist_ok=True)
-    tmp = STORE_FILE.with_suffix(".json.tmp")
-    tmp.write_text(json.dumps(d, ensure_ascii=False, indent=2), encoding="utf-8")
-    os.replace(tmp, STORE_FILE)
+    write_json_atomic(STORE_FILE, d)
     _CACHE = None  # 다음 _load에서 재적재
 
 
