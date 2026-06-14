@@ -248,7 +248,9 @@ export default function FailureAnalysis({ onQueueChange }: { onQueueChange?: () 
       const d = await fetch(`${API}/rca/draft`, {
         method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ key: sel.key }),
       }).then((r) => r.json());
-      setDraftMsg(d.error ? `⚠ ${d.error}` : "✓ 승인 대기 큐에 추가됨 (상단 '📤 승인 대기'에서 검토·게시)");
+      setDraftMsg(d.error ? `⚠ ${d.error}`
+        : d.already_approved ? `ℹ 이미 승인·게시된 이슈입니다${d.item?.comment_id ? ` (댓글 #${d.item.comment_id})` : ""} — 새 초안을 만들지 않았습니다`
+        : "✓ 승인 대기 큐에 추가됨 (상단 '📤 승인 대기'에서 검토·게시)");
       if (!d.error) onQueueChange?.();
     } catch (e: any) { setDraftMsg(`⚠ ${e.message}`); } finally { setDrafting(false); }
   };
@@ -264,7 +266,9 @@ export default function FailureAnalysis({ onQueueChange }: { onQueueChange?: () 
         method: "POST", headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ key: sel.key, analysis_md: reco.explanation, citations: reco.explanation_citations ?? [] }),
       }).then((r) => r.json());
-      setDraftAnMsg(d.error ? `⚠ ${d.error}` : "✓ 이 심층 분석을 승인 대기 큐에 추가했습니다 (검토 후 게시)");
+      setDraftAnMsg(d.error ? `⚠ ${d.error}`
+        : d.already_approved ? `ℹ 이미 승인·게시된 이슈입니다${d.item?.comment_id ? ` (댓글 #${d.item.comment_id})` : ""} — 새 초안을 만들지 않았습니다`
+        : "✓ 이 심층 분석을 승인 대기 큐에 추가했습니다 (검토 후 게시)");
       if (!d.error) onQueueChange?.();
     } catch (e: any) { setDraftAnMsg(`⚠ ${e.message}`); } finally { setDraftingAn(false); }
   };
