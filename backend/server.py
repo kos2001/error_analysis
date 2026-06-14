@@ -1096,6 +1096,20 @@ def knowledge_gaps_report(top: int = 20):
     return knowledge_gaps.report(top=top)
 
 
+# ---------------------------------------------------------------------------
+# 자기 개선 loop — L1 측정·진단·제안 (무변경)
+# ---------------------------------------------------------------------------
+@app.get("/selfcheck")
+def selfcheck(save: bool = True):
+    """자기 개선 점검 — 모든 측정 신호 집계 + 직전 대비 드리프트 + 개선 제안.
+
+    부작용 없음(지식 불변). save=true면 이력·날짜별 리포트 기록.
+    """
+    import self_improve
+    st = _reco_state()
+    return self_improve.run(st["records"], save=save)
+
+
 @app.post("/reco/reload")
 def reco_reload():
     """추천 KB 캐시 무효화 — 새 큐레이션 지식을 서버 재시작 없이 즉시 반영."""
