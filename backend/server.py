@@ -1206,6 +1206,43 @@ def selfcheck_reset_param(param: str):
     return {"ok": True, "reset": param, "env": env_key}
 
 
+# ---------------------------------------------------------------------------
+# 자기 개선 loop — L3 지식 변경 제안 큐 (사람 검토 전용, loop는 실행 안 함)
+# ---------------------------------------------------------------------------
+@app.post("/improve/suggest")
+def improve_suggest():
+    """신호에서 지식 변경 제안을 도출해 큐에 병합(거부/완료 상태 보존). loop는 실행 안 함."""
+    import self_improve, improve_queue
+    st = _reco_state()
+    base = [r for r in st["records"] if not r.get("curated")]
+    generated = self_improve.suggest(reco=st["reco"], records=base)
+    res = improve_queue.sync(generated)
+    return {"generated": len(generated), **res, "open_items": improve_queue.items("open")}
+
+
+@app.get("/improve/queue")
+def improve_queue_list(state: str = "open"):
+    """제안 큐 조회(기본 open)."""
+    import improve_queue
+    return {"items": improve_queue.items(state), "counts": improve_queue.counts()}
+
+
+class SuggestStateBody(BaseModel):
+    id: str
+    state: str           # open | done | dismissed
+
+
+@app.post("/improve/queue/state")
+def improve_queue_state(req: SuggestStateBody):
+    """제안 상태 변경(사람 결정: done 완료 / dismissed 거부)."""
+    import improve_queue
+    try:
+        it = improve_queue.set_state(req.id, req.state)
+        return {"ok": bool(it), "item": it, "counts": improve_queue.counts()}
+    except ValueError as e:
+        return {"ok": False, "error": str(e)}
+
+
 @app.post("/reco/reload")
 def reco_reload():
     """추천 KB 캐시 무효화 — 새 큐레이션 지식을 서버 재시작 없이 즉시 반영."""
