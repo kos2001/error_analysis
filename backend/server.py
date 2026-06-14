@@ -97,6 +97,9 @@ def _reco_state() -> dict:
             method=os.getenv("RVP_RECO_METHOD", "hybrid_embed"),
             rerank=os.getenv("RVP_RERANK", "0") == "1",
             rerank_model=os.getenv("RVP_RERANK_MODEL", "cohere/rerank-v3.5"),
+            # L2 검증된 파라미터 override(미설정 시 클래스 기본값 — 현행과 동일).
+            **{kw: float(os.environ[env]) for kw, env in
+               (("gate_cos", "RVP_GATE_COS"), ("boost", "RVP_BOOST")) if os.getenv(env)},
         ),
     })
     return _RECO_STATE
@@ -1151,6 +1154,56 @@ def selfcheck(save: bool = True):
     import self_improve
     st = _reco_state()
     return self_improve.run(st["records"], save=save)
+
+
+class ParamEvalBody(BaseModel):
+    param: str           # gate_cos | boost
+    value: float
+
+
+@app.post("/selfcheck/evaluate-param")
+def selfcheck_evaluate_param(req: ParamEvalBody):
+    """L2 — 후보 파라미터를 동결 평가셋에 shadow 평가(READ-ONLY, live 불변).
+
+    무회귀일 때만 safe=true. 안전해도 자동 적용 안 함 — apply는 별도 명시 호출.
+    """
+    import self_improve
+    try:
+        return self_improve.evaluate_param(req.param, req.value)
+    except ValueError as e:
+        return {"error": str(e)}
+
+
+@app.post("/selfcheck/apply-param")
+def selfcheck_apply_param(req: ParamEvalBody):
+    """L2 적용 — 무회귀 게이트를 재실행해 통과할 때만 override 영속·반영(되돌림 가능).
+
+    회귀하면 거부. value를 비우면 override 제거(기본값 복귀). 사람이 명시 호출하는 단계.
+    """
+    import self_improve, app_config
+    env_key = self_improve.TUNABLE.get(req.param)
+    if not env_key:
+        return {"ok": False, "error": f"튜닝 가능 파라미터 아님: {req.param}"}
+    verdict = self_improve.evaluate_param(req.param, req.value)
+    if not verdict.get("safe"):
+        return {"ok": False, "applied": False, "verdict": verdict,
+                "error": "무회귀 게이트 미통과 — 적용 거부"}
+    app_config.set_env(env_key, str(req.value))
+    _RECO_STATE.clear()  # 검증된 값 반영
+    return {"ok": True, "applied": True, "param": req.param, "value": req.value,
+            "env": env_key, "verdict": verdict}
+
+
+@app.post("/selfcheck/reset-param")
+def selfcheck_reset_param(param: str):
+    """L2 되돌리기 — 파라미터 override 제거(클래스 기본값 복귀)."""
+    import self_improve, app_config
+    env_key = self_improve.TUNABLE.get(param)
+    if not env_key:
+        return {"ok": False, "error": f"튜닝 가능 파라미터 아님: {param}"}
+    app_config.set_env(env_key, "")
+    _RECO_STATE.clear()
+    return {"ok": True, "reset": param, "env": env_key}
 
 
 @app.post("/reco/reload")

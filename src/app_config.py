@@ -70,10 +70,17 @@ def save(jira: dict | None, hermes: dict | None) -> dict:
 
 
 def set_env(key: str, value: str) -> None:
-    """단일 환경변수를 영속화 + 즉시 주입 (예: HERMES_BIN)."""
+    """단일 환경변수를 영속화 + 즉시 주입 (예: HERMES_BIN).
+
+    빈 값('' 또는 None)이면 override 제거(영속/환경 모두) — 되돌리기 지원.
+    """
     data = _load_json()
-    data[key] = value
-    os.environ[key] = value
+    if value is None or str(value) == "":
+        data.pop(key, None)
+        os.environ.pop(key, None)
+    else:
+        data[key] = value
+        os.environ[key] = value
     CONFIG_FILE.parent.mkdir(exist_ok=True)
     CONFIG_FILE.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
     _restrict_perms()
