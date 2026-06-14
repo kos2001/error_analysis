@@ -249,6 +249,86 @@ def evaluate_param(param: str, value: float) -> dict:
     }
 
 
+# --------------------------------------------------------------------------- #
+# L3 — 신호에서 '지식 변경' 제안 도출(사람 검토 큐). loop는 실행하지 않는다.
+# --------------------------------------------------------------------------- #
+def suggest(reco=None, records: list[dict] | None = None) -> list[dict]:
+    """측정 신호 → actionable 지식 변경 제안 목록. 실행은 사람이 HITL 엔드포인트로.
+
+    각 제안: {type, priority, target, rationale, evidence, action_hint}.
+    """
+    out = []
+
+    # 1) 미승격 고장모드 군집 → Known-Issue 기사 승격 제안(중복 사례 정리)
+    if reco is not None:
+        try:
+            import failure_modes
+            for c in failure_modes.cluster_from_recommender(reco, threshold=0.80, min_size=3):
+                if c.get("promoted") or c.get("avg_similarity", 0) < 0.80:
+                    continue
+                out.append({
+                    "type": "promote_known_issue", "priority": "P2",
+                    "target": c["representative"],
+                    "rationale": f"유사도 {c['avg_similarity']}로 묶인 {c['size']}건 중복 사례 — 정규 기사로 승격 권장",
+                    "evidence": {"members": c["members"], "size": c["size"],
+                                 "avg_similarity": c["avg_similarity"], "chips": c.get("chips", [])},
+                    "action_hint": "POST /knowledge/known-issue (members 승격)",
+                })
+        except Exception:
+            pass
+
+    # 2) 지식 공백(자주 묻지만 사례 없음) → RCA 작성/시드 제안
+    try:
+        import knowledge_gaps
+        for g in knowledge_gaps.report(top=10).get("top_underserved_templates", []):
+            if g.get("count", 0) < 2:
+                continue
+            out.append({
+                "type": "author_rca", "priority": "P1",
+                "target": g["template"],
+                "rationale": f"'{g['template'][:40]}' 영역이 {g['count']}회 질의됐으나 유사 사례 없음(coverage 미통과)",
+                "evidence": {"gap_count": g["count"]},
+                "action_hint": "해당 고장군 해결 사례 시드/문서화",
+            })
+    except Exception:
+        pass
+
+    # 3) 반복적으로 '도움 안 됨'으로 평가된 사례 → 검토/폐기 제안
+    try:
+        import reco_feedback
+        from collections import defaultdict
+        net = defaultdict(int)
+        for e in reco_feedback._load():
+            net[e["match_key"]] += 1 if e.get("rating") == "helpful" else -1
+        for k, v in net.items():
+            if v <= -2:
+                out.append({
+                    "type": "review_unhelpful", "priority": "P2", "target": k,
+                    "rationale": f"{k}가 추천에서 반복적으로 '도움 안 됨'(순효용 {v}) — 폐기/대체 검토",
+                    "evidence": {"net_helpful": v},
+                    "action_hint": "POST /knowledge/lifecycle (deprecated/superseded) 검토",
+                })
+    except Exception:
+        pass
+
+    # 4) 통제 어휘 밖 빈출 용어 → 온톨로지 정규화 검토(한 건으로 묶음, 노이즈 방지)
+    if records is not None:
+        try:
+            import ontology
+            rev = ontology.review(records, top=8)
+            terms = [e["term"] for e in rev.get("uncontrolled_entities", []) if e["count"] >= 10]
+            if len(terms) >= 3:
+                out.append({
+                    "type": "normalize_ontology", "priority": "P3", "target": "uncontrolled_terms",
+                    "rationale": "통제 어휘 밖 빈출 용어가 다수 — 동의어 정규화로 검색성/집계 개선",
+                    "evidence": {"top_terms": terms},
+                    "action_hint": "GET /knowledge/ontology/review 후 POST /knowledge/ontology/synonym",
+                })
+        except Exception:
+            pass
+    return out
+
+
 def main() -> int:
     out = run()
     print(f"[self_improve] {out['metrics']['ts']} — 제안 {len(out['recommendations'])}건")
