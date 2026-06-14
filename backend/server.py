@@ -843,7 +843,10 @@ def rca_draft(req: KeyBody):
         "created_at": _dt.datetime.now().isoformat(timespec="seconds"),
         "state": "pending",
     }
-    return {"item": rca_queue.upsert(item), "counts": rca_queue.counts()}
+    saved = rca_queue.upsert(item)
+    # 이미 승인·게시된 이슈면 upsert가 기존 approved를 반환(새 pending 안 만듦) → 정직히 알림
+    return {"item": saved, "counts": rca_queue.counts(),
+            "already_approved": saved.get("state") == "approved"}
 
 
 class AnalysisDraftBody(BaseModel):
@@ -879,7 +882,9 @@ def rca_draft_from_analysis(req: AnalysisDraftBody):
         "created_at": _dt.datetime.now().isoformat(timespec="seconds"),
         "state": "pending",
     }
-    return {"item": rca_queue.upsert(item), "counts": rca_queue.counts()}
+    saved = rca_queue.upsert(item)
+    return {"item": saved, "counts": rca_queue.counts(),
+            "already_approved": saved.get("state") == "approved"}
 
 
 @app.get("/rca/pending")
@@ -1311,7 +1316,12 @@ def _judge_rca(ctx: str, body: str) -> "JudgeScore | None":
                           "기준: 근거 충실도(날조·환각 감점), 인용 정합, 권장 해결 단계의 구체성·실행가능성, 한자 금지 준수.",
                           "한국어로 간단히 채점한다."])
         out = agent.run(input=f"## 근거 사례\n{ctx}\n\n## 채점할 RCA 분석\n{body}")
-        return out.content if isinstance(out.content, JudgeScore) else None
+        if not isinstance(out.content, JudgeScore):
+            return None
+        sc = out.content
+        sc.score = max(1, min(10, int(sc.score)))   # 모델이 1~10 범위를 벗어나는 경우 보정
+        sc.passed = sc.score >= 7                    # 보정 점수에 맞춰 통과 재계산
+        return sc
     except Exception:
         return None
 
