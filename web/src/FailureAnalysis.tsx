@@ -146,6 +146,16 @@ function Bar({ value }: { value: number }) {
   );
 }
 
+// 큐 진입 결과 알림 — 심각도(ok/info/warn)별 색상으로 '왜 안 들어갔는지'를 또렷이.
+function QNotice({ m }: { m: { sev: "ok" | "info" | "warn"; text: string } | null }) {
+  if (!m) return null;
+  const style = m.sev === "ok" ? "bg-emerald-50 border-emerald-200 text-emerald-700"
+    : m.sev === "info" ? "bg-sky-50 border-sky-200 text-sky-700"
+    : "bg-amber-50 border-amber-200 text-amber-800";
+  const icon = m.sev === "ok" ? "✓" : m.sev === "info" ? "ℹ" : "⚠";
+  return <div className={`mt-2 text-xs rounded-lg border px-2.5 py-1.5 leading-relaxed ${style}`}>{icon} {m.text}</div>;
+}
+
 export default function FailureAnalysis({ onQueueChange }: { onQueueChange?: () => void } = {}) {
   const [stats, setStats] = useState<any>(null);
   const [issues, setIssues] = useState<Issue[]>([]);
@@ -239,38 +249,42 @@ export default function FailureAnalysis({ onQueueChange }: { onQueueChange?: () 
   const explain = () => { if (sel) runExplain(sel.key); };
 
   // RCA 댓글 초안 → HITL 승인 대기 큐에 추가 (Jira 게시는 승인 시에만)
+  // 큐 진입 결과를 심각도(ok/info/warn)로 표준화 — '왜 안 들어갔는지'를 또렷이 표시
+  type QMsg = { sev: "ok" | "info" | "warn"; text: string } | null;
+  const qmsgOf = (d: any): QMsg => {
+    if (d?.queued) return { sev: "ok", text: d.reason || "승인 대기 큐에 추가됨" };
+    if (d?.reason_code === "already_approved") return { sev: "info", text: d.reason };
+    return { sev: "warn", text: d?.reason || d?.error || "큐에 추가하지 못했습니다" };
+  };
+
   const [drafting, setDrafting] = useState(false);
-  const [draftMsg, setDraftMsg] = useState("");
+  const [draftMsg, setDraftMsg] = useState<QMsg>(null);
   const draftRca = async () => {
     if (!sel) return;
-    setDrafting(true); setDraftMsg("");
+    setDrafting(true); setDraftMsg(null);
     try {
       const d = await fetch(`${API}/rca/draft`, {
         method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ key: sel.key }),
       }).then((r) => r.json());
-      setDraftMsg(d.error ? `⚠ ${d.error}`
-        : d.already_approved ? `ℹ 이미 승인·게시된 이슈입니다${d.item?.comment_id ? ` (댓글 #${d.item.comment_id})` : ""} — 새 초안을 만들지 않았습니다`
-        : "✓ 승인 대기 큐에 추가됨 (상단 '📤 승인 대기'에서 검토·게시)");
-      if (!d.error) onQueueChange?.();
-    } catch (e: any) { setDraftMsg(`⚠ ${e.message}`); } finally { setDrafting(false); }
+      setDraftMsg(qmsgOf(d));
+      if (d.queued) onQueueChange?.();
+    } catch (e: any) { setDraftMsg({ sev: "warn", text: e.message }); } finally { setDrafting(false); }
   };
 
   // AI 심층 분석(LLM) → HITL 승인 대기 큐 (생성물이라 항상 검토 후 게시)
   const [draftingAn, setDraftingAn] = useState(false);
-  const [draftAnMsg, setDraftAnMsg] = useState("");
+  const [draftAnMsg, setDraftAnMsg] = useState<QMsg>(null);
   const draftFromAnalysis = async () => {
     if (!sel || !reco?.explanation) return;
-    setDraftingAn(true); setDraftAnMsg("");
+    setDraftingAn(true); setDraftAnMsg(null);
     try {
       const d = await fetch(`${API}/rca/draft-from-analysis`, {
         method: "POST", headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ key: sel.key, analysis_md: reco.explanation, citations: reco.explanation_citations ?? [] }),
       }).then((r) => r.json());
-      setDraftAnMsg(d.error ? `⚠ ${d.error}`
-        : d.already_approved ? `ℹ 이미 승인·게시된 이슈입니다${d.item?.comment_id ? ` (댓글 #${d.item.comment_id})` : ""} — 새 초안을 만들지 않았습니다`
-        : "✓ 이 심층 분석을 승인 대기 큐에 추가했습니다 (검토 후 게시)");
-      if (!d.error) onQueueChange?.();
-    } catch (e: any) { setDraftAnMsg(`⚠ ${e.message}`); } finally { setDraftingAn(false); }
+      setDraftAnMsg(qmsgOf(d));
+      if (d.queued) onQueueChange?.();
+    } catch (e: any) { setDraftAnMsg({ sev: "warn", text: e.message }); } finally { setDraftingAn(false); }
   };
 
   // P1-3 추천 유용성 피드백 — 매치별 도움됨/아님 + 실제 근본원인 라벨 수집
@@ -495,7 +509,7 @@ export default function FailureAnalysis({ onQueueChange }: { onQueueChange?: () 
                             </button>
                           )}
                         </div>
-                        {draftMsg && <div className="mt-2 text-xs text-slate-500">{draftMsg}</div>}
+                        <QNotice m={draftMsg} />
                       </section>
                     )}
 
@@ -524,7 +538,7 @@ export default function FailureAnalysis({ onQueueChange }: { onQueueChange?: () 
                               className="text-sm px-4 py-2 rounded-lg border border-indigo-300 text-indigo-600 hover:bg-indigo-100 disabled:opacity-50 transition">
                               {draftingAn ? "추가 중…" : "📤 이 심층 분석을 RCA 댓글로 → 승인 대기"}
                             </button>
-                            {draftAnMsg && <div className="mt-2 text-xs text-slate-500">{draftAnMsg}</div>}
+                            <QNotice m={draftAnMsg} />
                           </div>
                         )}
                       </section>
