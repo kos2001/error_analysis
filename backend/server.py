@@ -1269,7 +1269,18 @@ def rca_validate(req: ValidateBody):
     return out
 
 
+# 프로덕션(Docker 등): 빌드된 프론트(web/dist)를 같은 오리진에서 정적 서빙.
+# 디렉터리가 있을 때만 마운트하므로 개발(dist 없음)엔 영향 없음. API 라우트가 모두
+# 등록된 뒤 '/'에 마운트 → 명시 경로(/health 등)가 우선, 나머지는 SPA(index.html).
+_WEB_DIST = ROOT / "web" / "dist"
+if _WEB_DIST.is_dir():
+    from fastapi.staticfiles import StaticFiles
+    app.mount("/", StaticFiles(directory=str(_WEB_DIST), html=True), name="web")
+
+
 if __name__ == "__main__":
     import uvicorn
     import os as _os
-    uvicorn.run("server:app", host="127.0.0.1", port=int(_os.getenv("RVP_PORT", "8001")), reload=False)
+    # 컨테이너에서는 0.0.0.0 바인드 필요 → RVP_HOST로 조정(기본 127.0.0.1 로컬 안전).
+    uvicorn.run("server:app", host=_os.getenv("RVP_HOST", "127.0.0.1"),
+                port=int(_os.getenv("RVP_PORT", "8001")), reload=False)

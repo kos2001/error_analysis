@@ -1,0 +1,19 @@
+# 빌드 컨텍스트에서 제외 (이미지 비대화·비밀 유출 방지)
+.git
+.venv
+**/__pycache__
+*.pyc
+*.pyo
+web/node_modules
+web/dist
+tmp_db
+logs
+*.log
+.playwright-mcp
+.DS_Store
+claudedocs
+# 비밀: .env 는 절대 이미지에 넣지 않음(런타임 env_file/-e 로 주입). 예시는 포함.
+.env
+*.env
+!.env.example
+# 주: data/ 는 포함(KB·큐레이션 지식·all_raw_issues.json 필요).
