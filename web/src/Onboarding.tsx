@@ -1,10 +1,8 @@
-import { useEffect, useState } from "react";
+import { useState } from "react";
 
 const API = (import.meta as any).env?.VITE_API ?? "http://127.0.0.1:8001";
 
 type TestResult = { ok: boolean; error?: string; user?: string; project?: string; models?: number } | null;
-type HStep = { key: string; label: string; done: boolean; auto: boolean; hint: string };
-type HProbe = { installed: boolean; profile_exists: boolean; has_key: boolean; model: string; ready: boolean; steps: HStep[] } | null;
 
 function Field({ label, hint, ...rest }: { label: string; hint?: string } & React.InputHTMLAttributes<HTMLInputElement>) {
   return (
@@ -25,8 +23,8 @@ function TestBadge({ r }: { r: TestResult }) {
 }
 
 export default function Onboarding({ status, onDone }: { status: any; onDone: () => void }) {
-  const h = status?.hermes ?? {}, j = status?.jira ?? {};
-  // Hermes Gateway
+  const h = status?.llm ?? {}, j = status?.jira ?? {};
+  // LLM 게이트웨이 (OpenRouter / agno)
   const [gatewayUrl, setGatewayUrl] = useState<string>(h.gateway_url ?? "https://openrouter.ai/api/v1");
   const [apiKey, setApiKey] = useState("");
   const [model, setModel] = useState<string>(h.model ?? "");
@@ -44,19 +42,8 @@ export default function Onboarding({ status, onDone }: { status: any; onDone: ()
   const [jTesting, setJTesting] = useState(false);
   const [saving, setSaving] = useState(false);
   const [err, setErr] = useState("");
-  // Hermes Agent(CLI 프로필) 셋업 점검/처리
-  const [probe, setProbe] = useState<HProbe>(null);
-  const [probing, setProbing] = useState(false);
-  const [ensuring, setEnsuring] = useState(false);
-  const reprobe = async () => { setProbing(true); try { setProbe(await fetch(`${API}/config/hermes/probe`).then((r) => r.json())); } catch { /* noop */ } finally { setProbing(false); } };
-  const ensureProfile = async () => {
-    setEnsuring(true);
-    try { const r = await fetch(`${API}/config/hermes/ensure-profile`, { method: "POST" }).then((x) => x.json()); if (r.probe) setProbe(r.probe); }
-    finally { setEnsuring(false); }
-  };
-  useEffect(() => { reprobe(); }, []);
 
-  const hermesBody = () => ({ hermes: { gateway_url: gatewayUrl, api_key: apiKey, model } });
+  const llmBody = () => ({ llm: { gateway_url: gatewayUrl, api_key: apiKey, model } });
   const jiraBody = () => ({
     jira: {
       base_url: baseUrl, project_key: projectKey, email,
@@ -68,16 +55,16 @@ export default function Onboarding({ status, onDone }: { status: any; onDone: ()
   const post = (path: string, body: any) =>
     fetch(`${API}${path}`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) }).then((r) => r.json());
 
-  const testHermes = async () => { setHTesting(true); setHTest(null); try { setHTest(await post("/config/test/hermes", hermesBody())); } catch (e: any) { setHTest({ ok: false, error: e.message }); } finally { setHTesting(false); } };
+  const testLlm = async () => { setHTesting(true); setHTest(null); try { setHTest(await post("/config/test/llm", llmBody())); } catch (e: any) { setHTest({ ok: false, error: e.message }); } finally { setHTesting(false); } };
   const testJira = async () => { setJTesting(true); setJTest(null); try { setJTest(await post("/config/test/jira", jiraBody())); } catch (e: any) { setJTest({ ok: false, error: e.message }); } finally { setJTesting(false); } };
 
-  const hermesReady = !!gatewayUrl && !!model && (!!apiKey || h.has_key);
+  const llmReady = !!gatewayUrl && !!model && (!!apiKey || h.has_key);
   const jiraReady = !!baseUrl && !!projectKey && (authType === "basic" ? (!!email && (!!apiToken || j.has_secret)) : (!!pat || j.has_secret));
 
   const save = async () => {
     setSaving(true); setErr("");
     try {
-      const st = await post("/config", { ...hermesBody(), ...jiraBody() });
+      const st = await post("/config", { ...llmBody(), ...jiraBody() });
       if (st.ready) onDone();
       else setErr("설정이 완료되지 않았습니다. 필수 항목을 모두 채워주세요.");
     } catch (e: any) { setErr(e.message); } finally { setSaving(false); }
@@ -91,11 +78,11 @@ export default function Onboarding({ status, onDone }: { status: any; onDone: ()
           <p className="text-sm text-slate-500 mt-1">서비스를 시작하려면 아래 두 가지 연동을 설정하세요.</p>
         </div>
 
-        {/* Hermes Gateway */}
+        {/* LLM 게이트웨이 (OpenRouter) */}
         <section className="bg-white rounded-2xl border border-slate-200 p-6 mb-5 shadow-sm">
           <div className="flex items-center justify-between mb-4">
             <h2 className="font-bold text-indigo-700">⚙️ LLM 게이트웨이 (OpenRouter)</h2>
-            <span className={`text-xs px-2 py-0.5 rounded-full ${hermesReady ? "bg-emerald-100 text-emerald-700" : "bg-slate-100 text-slate-500"}`}>{hermesReady ? "준비됨" : "미설정"}</span>
+            <span className={`text-xs px-2 py-0.5 rounded-full ${llmReady ? "bg-emerald-100 text-emerald-700" : "bg-slate-100 text-slate-500"}`}>{llmReady ? "준비됨" : "미설정"}</span>
           </div>
           <div className="space-y-3">
             <Field label="Gateway URL" value={gatewayUrl} onChange={(e) => setGatewayUrl(e.target.value)} placeholder="https://openrouter.ai/api/v1" />
@@ -103,49 +90,10 @@ export default function Onboarding({ status, onDone }: { status: any; onDone: ()
               placeholder={h.has_key ? "설정됨 — 변경 시에만 입력" : "sk-or-..."} hint={h.has_key ? "비워두면 기존 키 유지" : undefined} />
             <Field label="Model" value={model} onChange={(e) => setModel(e.target.value)} placeholder="deepseek/deepseek-v4-flash" />
             <div className="flex items-center gap-3">
-              <button onClick={testHermes} disabled={hTesting}
+              <button onClick={testLlm} disabled={hTesting}
                 className="text-sm px-3 py-1.5 rounded-lg border border-indigo-300 text-indigo-600 hover:bg-indigo-50 disabled:opacity-50">{hTesting ? "테스트 중…" : "연결 테스트"}</button>
               <TestBadge r={hTest} />
             </div>
-
-            {/* Hermes Agent(CLI 프로필) 셋업 — per-user 설치형(RVP_ENGINE=hermes)일 때만 */}
-            {status?.engine === "hermes" && (
-            <div className="mt-2 rounded-xl bg-slate-50 border border-slate-200 p-4">
-              <div className="flex items-center justify-between mb-2">
-                <span className="text-xs font-semibold text-slate-600">🤖 Hermes Agent (CLI 프로필) 셋업</span>
-                <button onClick={reprobe} disabled={probing}
-                  className="text-[11px] text-slate-500 hover:text-indigo-600 disabled:opacity-50">{probing ? "확인 중…" : "↻ 다시 확인"}</button>
-              </div>
-              {!probe ? (
-                <div className="text-[11px] text-slate-400">상태 확인 중…</div>
-              ) : (
-                <>
-                  <ul className="space-y-1.5">
-                    {probe.steps.map((s) => (
-                      <li key={s.key} className="text-xs">
-                        <div className="flex items-center gap-2">
-                          <span className={s.done ? "text-emerald-600" : "text-slate-300"}>{s.done ? "✓" : "○"}</span>
-                          <span className={s.done ? "text-slate-600" : "text-slate-700 font-medium"}>{s.label}</span>
-                          {!s.done && s.auto && (
-                            <button onClick={ensureProfile} disabled={ensuring || !probe.installed}
-                              className="ml-auto text-[11px] px-2 py-0.5 rounded bg-indigo-600 text-white hover:bg-indigo-700 disabled:opacity-40">{ensuring ? "등록 중…" : "자동 등록"}</button>
-                          )}
-                        </div>
-                        {!s.done && (
-                          <code className="block mt-0.5 ml-5 text-[10px] text-slate-500 bg-white border border-slate-200 rounded px-1.5 py-0.5">{s.hint}</code>
-                        )}
-                      </li>
-                    ))}
-                  </ul>
-                  <div className="mt-2 text-[11px]">
-                    {probe.ready
-                      ? <span className="text-emerald-600">✓ Hermes agent 준비 완료{probe.model ? ` · 모델 ${probe.model}` : ""} (프로필 'lsi')</span>
-                      : <span className="text-slate-400">설치·인증은 터미널에서 위 명령으로 진행하고, 프로필 등록은 '자동 등록'으로 처리하세요. (OpenRouter 게이트웨이만 쓰면 생략 가능)</span>}
-                  </div>
-                </>
-              )}
-            </div>
-            )}
           </div>
         </section>
 
@@ -186,7 +134,7 @@ export default function Onboarding({ status, onDone }: { status: any; onDone: ()
 
         {err && <div className="text-sm text-rose-600 bg-rose-50 border border-rose-200 rounded-lg p-3 mb-4">{err}</div>}
 
-        <button onClick={save} disabled={saving || !hermesReady || !jiraReady}
+        <button onClick={save} disabled={saving || !llmReady || !jiraReady}
           className="w-full py-3 rounded-xl bg-gradient-to-r from-indigo-600 to-violet-600 text-white font-semibold hover:opacity-90 disabled:opacity-40 transition">
           {saving ? "저장 중…" : "저장하고 시작하기"}
         </button>

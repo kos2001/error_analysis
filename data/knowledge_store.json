@@ -98,6 +98,32 @@
       "schema_version": 1,
       "verified": true,
       "curated": true
+    },
+    {
+      "key": "LSI-120-rca",
+      "source_issue": "LSI-120",
+      "comment_id": "11282",
+      "summary": "[DDI-OLED-T7] 가변주사율(VRR) 전환 시 화면 깜빡임(flicker) (Anchor Mobile / eDP bridge)",
+      "category": "Timing",
+      "template": "가변주사율(VRR) 전환 시 화면 깜빡임(flicker)",
+      "symptom": "120Hz↔1Hz 가변주사율(LTPO) 전환 시 특정 회색조 패턴에서 눈에 띄는 brightness flicker가 발생합니다.",
+      "chip": "DDI-OLED-T7",
+      "citations": [
+        "LSI-183",
+        "LSI-205",
+        "LSI-36"
+      ],
+      "root_cause": "주사율 전환 시 DDI의 gamma/Vcom 보정값이 새 refresh rate에 맞춰 업데이트되는 타이밍이 frame boundary와 정렬되지 않아 1프레임 동안 잘못된 Vcom 적용.",
+      "resolution": "frame rate 전환과 Vcom/gamma register 업데이트를 vsync에 atomic하게 동기화하고, 전환 프레임에 대해 보간된 중간 보정값 적용.",
+      "workaround": "VRR 비활성화(고정 60/120Hz) 시 미발생.\n\n참고 사례: LSI-36, LSI-183, LSI-205\n\n_과거 해결 이슈 기반 자동 분석 (사람 승인 후 게시)._",
+      "content_text": "🤖 **자동 근본원인 분석** (RCA-bot · 신뢰도 중간)\n\n### 예상 근본원인\n주사율 전환 시 DDI의 gamma/Vcom 보정값이 새 refresh rate에 맞춰 업데이트되는 타이밍이 frame boundary와 정렬되지 않아 1프레임 동안 잘못된 Vcom 적용.\n\n### 권장 해결책\nframe rate 전환과 Vcom/gamma register 업데이트를 vsync에 atomic하게 동기화하고, 전환 프레임에 대해 보간된 중간 보정값 적용.\n\n### 임시 우회책\nVRR 비활성화(고정 60/120Hz) 시 미발생.\n\n참고 사례: LSI-36, LSI-183, LSI-205\n\n_과거 해결 이슈 기반 자동 분석 (사람 승인 후 게시)._",
+      "author": "oseok.kim2001@gmail.com",
+      "approved_at": "2026-06-14T11:03:58",
+      "updated_at": "2026-06-14T11:03:58",
+      "content_hash": "45138e24ca2c",
+      "schema_version": 1,
+      "verified": true,
+      "curated": true
     }
   ]
 }

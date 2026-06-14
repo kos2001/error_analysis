@@ -37,16 +37,14 @@
 7. **[P2] `/chat`이 요청마다 `build_agent()` 재생성** — agno Agent + SqliteDb + MemoryManager를
    매 요청 새로 만든다. → `(user_id, session_id)` 키 LRU 캐시.
 
-8. **[P2] LLM 종합 분석(explain)이 동기 블로킹** — hermes 엔진 기준 수십 초.
-   → ① SSE 스트리밍(OpenRouter는 `stream:true`, hermes는 stdout 라인 단위 중계)
-   ② 또는 백그라운드 작업 + 프론트 폴링. 매치 결과는 즉시, 설명은 도착 시 갱신(현재 UI 구조가 이미 2단계라 백엔드만 바꾸면 됨).
+8. **[완료] LLM 종합 분석(explain) SSE 스트리밍** — OpenRouter `stream:true` 직접 호출
+   (`_llm_stream`)로 토큰 단위 중계 구현됨. 매치 즉시 + 설명 스트리밍.
 
-9. **[P3] hermes 프로세스 기동 오버헤드** — 호출마다 CLI 부팅(~수 초).
-   → `hermes proxy`(OpenAI 호환 로컬 서버)에 Nous Portal 로그인 후 HTTP로 전환하면
-   프로세스 기동 제거 + 진짜 토큰 스트리밍 확보. (현재 proxy upstream 미로그인 상태)
+9. ~~[P3] hermes 프로세스 기동 오버헤드~~ — **무효**: 엔진을 agno(OpenRouter HTTP)
+   단일로 결정해 hermes CLI/proxy 미사용.
 
-10. **[P3] GraphRetriever가 agent.py와 hermes_engine.py에 각각 로드** — 중복 메모리/초기화.
-    → 단일 모듈 레벨 싱글톤으로 공유.
+10. **[P3] GraphRetriever 중복 로드** — agent.py 등에서 개별 로드 시 단일 모듈 레벨
+    싱글톤으로 공유(해당 시).
 
 ## C. 운영 (데이터 신선도·인입 속도)
 
