@@ -1,1 +1,14 @@
-[]
+[
+  {
+    "query_key": "LSI-117",
+    "query_summary": "[ISOCELL-HP9] HDR 모드에서 움직이는 피사체에 motion artifact(ghosting) (Orion Telecom / Custom DSC bridge)",
+    "query_template": "HDR 모드에서 움직이는 피사체에 motion artifact(ghosting)",
+    "match_key": "LSI-12",
+    "rating": "helpful",
+    "is_actual_root_cause": false,
+    "match_rank": 1,
+    "match_score": 0.9295,
+    "note": "",
+    "created_at": "2026-06-14T21:58:24"
+  }
+]
