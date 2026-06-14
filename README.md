@@ -59,13 +59,11 @@ bash scripts/dev.sh        # 백엔드(:8001) + 프론트(:5173)
   264건 코퍼스(LSI+NFC) 기준 LOO·unresolved P@1 1.0, paraphrase 49문항
   P@1 .898 / P@3 .939 / 게이트 통과 .939 / 무관 질의 차단 .95 (hybrid_embed).
 
-### LLM 설명 엔진 선택 (RVP_ENGINE)
+### LLM 설명 엔진
 
-`/recommend?explain=true` 의 종합 설명 생성 엔진을 `.env`로 선택:
-
-- `RVP_ENGINE=agno` (기본): OpenRouter API 직접 호출
-- `RVP_ENGINE=hermes`: 로컬 Hermes Agent CLI 서브프로세스 (`hermes chat -q ... -Q --cli`).
-  `HERMES_MODEL`/`HERMES_BIN`/`HERMES_TIMEOUT`/`HERMES_TOOLSETS` 로 오버라이드.
+`/recommend?explain=true`·`/recommend/explain/stream` 의 종합 설명은 **agno(OpenRouter
+HTTP 직접 호출)** 단일 엔진으로 생성한다. 모델·엔드포인트는 `.env`의 `OPENROUTER_*`로 설정
+(`OPENROUTER_MODEL`/`OPENROUTER_BASE_URL`/`OPENROUTER_API_KEY`). 스트리밍은 SSE.
 
 ## 구조
 
@@ -76,7 +74,6 @@ src/
   explorer.py           3) 탐색/검색/시각화
   recommender.py        해결책 추천기 (graph/bm25/hybrid/embed)
   eval_recommender.py   P@1/P@3/MRR 평가 하네스
-  hermes_engine.py      Hermes Agent CLI 엔진 (LLM 설명 생성 대체 백엔드)
   jira_commenter.py     Jira 댓글 조회/게시 (사람 검토 승인 후 사용)
   agent.py, retrievers.py, lang_validator.py, ...  (평가/실험용 유틸)
 scripts/
@@ -95,8 +92,7 @@ web/                    Vite + React + TS + Tailwind
 ```
 JIRA_BASE_URL=...        JIRA_PROJECT_KEY=LSI
 JIRA_EMAIL=...           JIRA_API_TOKEN=...      # 또는 JIRA_PAT
-OPENROUTER_API_KEY=...   OPENROUTER_MODEL=...
-RVP_ENGINE=hermes        # 채팅 엔진: agno(기본) | hermes
+OPENROUTER_API_KEY=...   OPENROUTER_MODEL=...    # LLM 엔진=agno(OpenRouter)
 ```
 
 ## Stack

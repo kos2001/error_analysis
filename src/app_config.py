@@ -1,4 +1,4 @@
-"""앱 설정 저장소 — 온보딩에서 입력한 Hermes Gateway / Jira 설정을 JSON에 영속화하고
+"""앱 설정 저장소 — 온보딩에서 입력한 LLM(OpenRouter) / Jira 설정을 JSON에 영속화하고
 os.environ 에 주입한다 (단일 책임).
 
 정책: 온보딩 저장값이 소스 오브 트루스. 서버 기동 시 load_into_env()로 적용하므로
@@ -20,7 +20,7 @@ JIRA_MAP = {
     "base_url": "JIRA_BASE_URL", "project_key": "JIRA_PROJECT_KEY",
     "email": "JIRA_EMAIL", "api_token": "JIRA_API_TOKEN", "pat": "JIRA_PAT",
 }
-HERMES_MAP = {
+LLM_MAP = {
     "gateway_url": "OPENROUTER_BASE_URL", "api_key": "OPENROUTER_API_KEY",
     "model": "OPENROUTER_MODEL",
 }
@@ -50,10 +50,10 @@ def load_into_env() -> None:
             os.environ[k] = str(v)
 
 
-def save(jira: dict | None, hermes: dict | None) -> dict:
+def save(jira: dict | None, llm: dict | None) -> dict:
     """온보딩 입력 저장 — 빈 문자열 필드는 기존값 유지(비밀 재입력 강제 방지)."""
     data = _load_json()
-    for section, mapping in ((jira or {}, JIRA_MAP), (hermes or {}, HERMES_MAP)):
+    for section, mapping in ((jira or {}, JIRA_MAP), (llm or {}, LLM_MAP)):
         for field, env_key in mapping.items():
             v = section.get(field)
             if v is None:
@@ -70,7 +70,7 @@ def save(jira: dict | None, hermes: dict | None) -> dict:
 
 
 def set_env(key: str, value: str) -> None:
-    """단일 환경변수를 영속화 + 즉시 주입 (예: HERMES_BIN).
+    """단일 환경변수를 영속화 + 즉시 주입 (예: RVP_GATE_COS 등 L2 override).
 
     빈 값('' 또는 None)이면 override 제거(영속/환경 모두) — 되돌리기 지원.
     """
@@ -91,10 +91,9 @@ def status() -> dict:
     jira_ok = bool(
         g.get("JIRA_BASE_URL") and g.get("JIRA_PROJECT_KEY")
         and (g.get("JIRA_PAT") or (g.get("JIRA_EMAIL") and g.get("JIRA_API_TOKEN"))))
-    hermes_ok = bool(
+    llm_ok = bool(
         g.get("OPENROUTER_BASE_URL") and g.get("OPENROUTER_API_KEY") and g.get("OPENROUTER_MODEL"))
     return {
-        "engine": g.get("RVP_ENGINE", "agno").lower(),   # agno(OpenRouter) | hermes(CLI)
         "jira": {
             "configured": jira_ok,
             "base_url": g.get("JIRA_BASE_URL", ""),
@@ -103,11 +102,11 @@ def status() -> dict:
             "auth_mode": "pat" if g.get("JIRA_PAT") else ("basic" if g.get("JIRA_API_TOKEN") else ""),
             "has_secret": bool(g.get("JIRA_PAT") or g.get("JIRA_API_TOKEN")),
         },
-        "hermes": {
-            "configured": hermes_ok,
+        "llm": {
+            "configured": llm_ok,
             "gateway_url": g.get("OPENROUTER_BASE_URL", "https://openrouter.ai/api/v1"),
             "model": g.get("OPENROUTER_MODEL", ""),
             "has_key": bool(g.get("OPENROUTER_API_KEY")),
         },
-        "ready": jira_ok and hermes_ok,
+        "ready": jira_ok and llm_ok,
     }

@@ -46,14 +46,10 @@ import rca_queue  # noqa: E402
 import reco_feedback  # noqa: E402
 import self_improve  # noqa: E402
 
-# 저장된 온보딩 설정(Hermes Gateway/Jira)을 env에 주입 — 서버 기동 시 1회.
+# 저장된 온보딩 설정(LLM(OpenRouter)/Jira)을 env에 주입 — 서버 기동 시 1회.
 app_config.load_into_env()
 
-# LLM 설명 생성 엔진 선택: agno(OpenRouter) | hermes(Hermes Agent CLI)
-ENGINE = os.getenv("RVP_ENGINE", "agno").lower()
-if ENGINE == "hermes":
-    from hermes_engine import HermesEngine  # noqa: E402
-    _HERMES = HermesEngine()
+# LLM 설명 생성 엔진: agno(OpenRouter HTTP) 단일.
 
 app = FastAPI(title="LSI Failure Analysis API")
 
@@ -134,11 +130,11 @@ def health():
 
 
 # ---------------------------------------------------------------------------
-# 설정 온보딩 (Hermes Gateway / Jira) — 미설정 시 프론트가 강제 진입
+# 설정 온보딩 (LLM(OpenRouter) / Jira) — 미설정 시 프론트가 강제 진입
 # ---------------------------------------------------------------------------
 class ConfigBody(BaseModel):
     jira: Optional[dict] = None       # {base_url, project_key, email, api_token, pat}
-    hermes: Optional[dict] = None     # {gateway_url, api_key, model}
+    llm: Optional[dict] = None        # {gateway_url, api_key, model} → OpenRouter(agno)
 
 
 @app.get("/config/status")
@@ -148,7 +144,7 @@ def config_status():
 
 @app.post("/config")
 def config_save(body: ConfigBody):
-    st = app_config.save(body.jira, body.hermes)
+    st = app_config.save(body.jira, body.llm)
     _RECO_STATE.clear()  # Jira 변경 반영 위해 KB 캐시 무효화
     return st
 
@@ -182,10 +178,11 @@ def config_test_jira(body: ConfigBody):
         return {"ok": False, "error": str(e)[:200]}
 
 
-@app.post("/config/test/hermes")
-def config_test_hermes(body: ConfigBody):
+@app.post("/config/test/llm")
+def config_test_llm(body: ConfigBody):
+    """OpenRouter(agno) 연결 테스트 — /models 조회."""
     import requests
-    h = body.hermes or {}
+    h = body.llm or {}
     base = (h.get("gateway_url") or os.getenv("OPENROUTER_BASE_URL", "https://openrouter.ai/api/v1")).rstrip("/")
     key = h.get("api_key") or os.getenv("OPENROUTER_API_KEY")
     if not key:
@@ -197,81 +194,6 @@ def config_test_hermes(body: ConfigBody):
         return {"ok": True, "models": n}
     except Exception as e:
         return {"ok": False, "error": str(e)[:200]}
-
-
-# --- Hermes Agent(CLI 프로필) 설정 처리 — 미설정 감지 + 자동 등록/안내 ---
-HERMES_PROFILE = "lsi"
-
-
-def _hermes_base_bin() -> str:
-    import shutil
-    return shutil.which("hermes") or os.path.expanduser("~/.local/bin/hermes")
-
-
-def _hermes_probe() -> dict:
-    """hermes agent 셋업 상태 점검 — 온보딩 체크리스트용."""
-    import subprocess
-    base = _hermes_base_bin()
-    installed = os.path.exists(base)
-    prof_dir = Path(os.path.expanduser(f"~/.hermes/profiles/{HERMES_PROFILE}"))
-    profile_exists = prof_dir.exists()
-    has_key, model = False, ""
-    if installed:
-        try:
-            args = [base] + (["-p", HERMES_PROFILE] if profile_exists else []) + ["status"]
-            out = subprocess.run(args, capture_output=True, text=True, timeout=20).stdout
-            for line in out.splitlines():
-                s = line.strip()
-                if s.startswith("Model:"):
-                    model = s.split(":", 1)[1].strip()
-                if "✓" in s and any(p in s for p in ("OpenRouter", "OpenAI", "Gemini", "Google", "Anthropic")):
-                    has_key = True
-        except Exception:
-            pass
-    steps = [
-        {"key": "install", "label": "hermes CLI 설치", "done": installed, "auto": False,
-         "hint": "pipx install hermes-agent  (또는 pip install hermes-agent)"},
-        {"key": "auth", "label": "제공자 인증 / API 키", "done": has_key, "auto": False,
-         "hint": "hermes login  또는  hermes setup  (브라우저 OAuth 또는 키 입력)"},
-        {"key": "profile", "label": f"'{HERMES_PROFILE}' 프로필(agent) 등록", "done": profile_exists, "auto": True,
-         "hint": f"hermes profile create {HERMES_PROFILE} --clone"},
-    ]
-    return {"installed": installed, "bin": base, "profile_exists": profile_exists,
-            "has_key": has_key, "model": model,
-            "ready": installed and profile_exists and has_key, "steps": steps}
-
-
-@app.get("/config/hermes/probe")
-def hermes_probe():
-    return _hermes_probe()
-
-
-@app.post("/config/hermes/ensure-profile")
-def hermes_ensure_profile():
-    """자동화 가능한 단계 처리: 'lsi' 프로필이 없으면 생성(clone) + HERMES_BIN 연결."""
-    import subprocess
-    base = _hermes_base_bin()
-    if not os.path.exists(base):
-        return {"ok": False, "error": "hermes CLI가 설치되어 있지 않습니다. 먼저 설치하세요.",
-                "probe": _hermes_probe()}
-    prof_dir = Path(os.path.expanduser(f"~/.hermes/profiles/{HERMES_PROFILE}"))
-    created = False
-    if not prof_dir.exists():
-        r = subprocess.run(
-            [base, "profile", "create", HERMES_PROFILE, "--clone", "--description",
-             "LSI 불량 분석 어시스턴트: 과거 해결 이슈 기반 근본원인·해결책 추천 + Jira RCA 댓글"],
-            capture_output=True, text=True, timeout=90)
-        created = r.returncode == 0
-        if not created:
-            return {"ok": False, "error": (r.stderr or r.stdout).strip()[:300],
-                    "probe": _hermes_probe()}
-    # 앱이 등록된 프로필로 LLM을 호출하도록 HERMES_BIN(래퍼) 영속화
-    wrapper = os.path.expanduser(f"~/.local/bin/{HERMES_PROFILE}")
-    if os.path.exists(wrapper):
-        app_config.set_env("HERMES_BIN", wrapper)
-    return {"ok": True, "created": created,
-            "hermes_bin": wrapper if os.path.exists(wrapper) else base,
-            "probe": _hermes_probe()}
 
 
 # ---------------------------------------------------------------------------
@@ -483,15 +405,6 @@ def _llm_explain(query_rec: dict, matches: list[dict]) -> dict:
     """
     prompt = _explain_prompt(query_rec, matches)
     valid_keys = {m["key"] for m in matches}
-    if ENGINE == "hermes":
-        try:
-            raw = _HERMES.complete(prompt)
-            vr = validate_and_fix(raw)
-            text = vr.rewritten if (not vr.ok and vr.rewritten) else raw
-        except Exception as e:
-            return {"markdown": f"(LLM 설명 생성 실패: {e})", "citations": [], "dropped": []}
-        cited = sorted({k for k in re.findall(r"LSI-\d+", text)} & valid_keys)
-        return {"markdown": text, "citations": cited, "dropped": []}
     try:
         exp = _agno_explain(prompt)
     except Exception as e:
@@ -631,14 +544,9 @@ def explain_stream(key: Optional[str] = None, summary: str = "", symptom: str = 
         reasoning = os.getenv("RVP_EXPLAIN_REASONING", "0") == "1"
         acc: list[str] = []
         try:
-            if ENGINE == "hermes":  # 스트리밍 미지원 → 1회 전송
-                text = _HERMES.complete(prompt)
-                acc.append(text)
-                yield f"data: {json.dumps({'type': 'delta', 'text': text}, ensure_ascii=False)}\n\n"
-            else:
-                for delta in _llm_stream(prompt, reasoning=reasoning):
-                    acc.append(delta)
-                    yield f"data: {json.dumps({'type': 'delta', 'text': delta}, ensure_ascii=False)}\n\n"
+            for delta in _llm_stream(prompt, reasoning=reasoning):
+                acc.append(delta)
+                yield f"data: {json.dumps({'type': 'delta', 'text': delta}, ensure_ascii=False)}\n\n"
             full = "".join(acc)
             cited = sorted({m for m in re.findall(r"LSI-\d+", full)} & valid)
             yield f"data: {json.dumps({'type': 'done', 'citations': cited}, ensure_ascii=False)}\n\n"

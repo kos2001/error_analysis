@@ -15,7 +15,7 @@
 | 파싱 (chip/category/symptom + 해결 이슈의 root_cause/resolution/workaround 추출) | ✅ 있음 | `src/preprocess.py::parse_issue` |
 | 유사 해결 사례 검색 (hybrid RRF, 합성 평가 P@1=1.0) + proposal/confidence | ✅ 있음 | `src/recommender.py` |
 | LLM 종합 설명 (한국어, 근거 키 인용 프롬프트) | ✅ 있음 | `backend/server.py::_llm_explain` |
-| LLM 엔진 추상화 (agno/OpenRouter ↔ Hermes CLI) | ✅ 있음 | `src/hermes_engine.py` + `RVP_ENGINE` |
+| LLM 엔진 (agno / OpenRouter HTTP 직접) | ✅ 있음 | `backend/server.py::_llm_stream` |
 | 언어 규칙 검증/재작성 (CJK 한자 금지) | ✅ 있음 | `src/lang_validator.py` |
 | **Jira 댓글 게시 (POST)** | ❌ 없음 | 신규 `src/jira_commenter.py` |
 | **배치 오케스트레이션 CLI (dry-run/live)** | ❌ 없음 | 신규 `scripts/rca_comment.py` |
@@ -36,7 +36,7 @@ Jira ──ingest(status=all)──▶ raw ──parse_issue──▶ records
                           │  matches + proposal(confidence)
                    [게이트 1] coverage: matches 없으면 skip
                           │
-                LLM 댓글 생성 (RVP_ENGINE: hermes | OpenRouter)
+                LLM 댓글 생성 (agno / OpenRouter)
                           │
                    [게이트 2] lang_validator (한자 검출 → 재작성)
                    [게이트 3] 인용 검증: 본문 속 LSI-키 ⊆ matches 키
@@ -140,7 +140,7 @@ _본 댓글은 과거 해결 이슈 기반 자동 분석입니다. 입력해시:
 ## 5. 구현 단계 (PR 분할)
 
 1. **PR1 — 게시 경로**: `jira_commenter.py` + `rca_comment.py` (dry-run, 템플릿 댓글, 리포트)
-2. **PR2 — 품질/멱등**: LLM 생성 통합(RVP_ENGINE), 4개 게이트, 입력해시 멱등성, `--live/--update`
+2. **PR2 — 품질/멱등**: LLM 생성 통합(agno), 4개 게이트, 입력해시 멱등성, `--live/--update`
 3. **PR3 — 선택 확장**: `POST /rca/comment/{key}` 백엔드 엔드포인트 + 웹 UI "Jira에 게시" 버튼,
    cron 주기 실행(신규/변경 이슈만)
 
