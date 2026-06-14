@@ -11,32 +11,22 @@
 """
 from __future__ import annotations
 
-import datetime as _dt
-import json
-import os
 from collections import Counter, defaultdict
 from pathlib import Path
+
+from json_store import read_json, write_json_atomic, now_iso
 
 ROOT = Path(__file__).resolve().parent.parent
 STORE_FILE = ROOT / "data" / "ownership.json"
 
 
 def _load() -> dict:
-    if STORE_FILE.exists():
-        try:
-            d = json.loads(STORE_FILE.read_text(encoding="utf-8"))
-            if isinstance(d, dict):
-                return d
-        except Exception:
-            pass
-    return {}
+    d = read_json(STORE_FILE, {})
+    return d if isinstance(d, dict) else {}
 
 
 def _save(d: dict) -> None:
-    STORE_FILE.parent.mkdir(exist_ok=True)
-    tmp = STORE_FILE.with_suffix(".json.tmp")
-    tmp.write_text(json.dumps(d, ensure_ascii=False, indent=2), encoding="utf-8")
-    os.replace(tmp, STORE_FILE)
+    write_json_atomic(STORE_FILE, d)
 
 
 def set_owner(key: str, *, author: str = "", validator: str = "", role: str = "") -> dict:
@@ -45,7 +35,7 @@ def set_owner(key: str, *, author: str = "", validator: str = "", role: str = ""
     d = _load()
     cur = d.get(key, {})
     cur.update({k: v for k, v in (("author", author), ("validator", validator), ("role", role)) if v})
-    cur["updated_at"] = _dt.datetime.now().isoformat(timespec="seconds")
+    cur["updated_at"] = now_iso()
     d[key] = cur
     _save(d)
     return {"key": key, **cur}

@@ -15,9 +15,10 @@
 """
 from __future__ import annotations
 
-import datetime as _dt
 import json
 from pathlib import Path
+
+from json_store import read_json, write_json_atomic, now_iso
 
 ROOT = Path(__file__).resolve().parent.parent
 HISTORY_FILE = ROOT / "data" / "self_improve_history.json"
@@ -50,7 +51,7 @@ def snapshot(records: list[dict] | None = None) -> dict:
 
     quality = _safe(lambda: quality_gate.validate(base), default={})
     return {
-        "ts": _dt.datetime.now().isoformat(timespec="seconds"),
+        "ts": now_iso(),
         "reco_feedback": _safe(reco_feedback.stats, {}),
         "kb_quality": {"ok": quality.get("ok"), "violations": quality.get("violations", []),
                        "fill": (quality.get("report") or {}).get("fill", {}),
@@ -96,14 +97,8 @@ def recommendations(snap: dict) -> list[dict]:
 
 
 def _load_history() -> list:
-    if HISTORY_FILE.exists():
-        try:
-            d = json.loads(HISTORY_FILE.read_text(encoding="utf-8"))
-            if isinstance(d, list):
-                return d
-        except Exception:
-            pass
-    return []
+    d = read_json(HISTORY_FILE, [])
+    return d if isinstance(d, list) else []
 
 
 def _key_metrics(snap: dict) -> dict:
@@ -142,8 +137,7 @@ def run(records: list[dict] | None = None, *, save: bool = True) -> dict:
     result = {"snapshot": snap, "recommendations": recs, "metrics": metrics, "drift": drift}
     if save:
         history.append(metrics)
-        HISTORY_FILE.parent.mkdir(exist_ok=True)
-        HISTORY_FILE.write_text(json.dumps(history[-200:], ensure_ascii=False, indent=2), encoding="utf-8")
+        write_json_atomic(HISTORY_FILE, history[-200:])
         _write_report(result)
     return result
 

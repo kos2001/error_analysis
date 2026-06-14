@@ -14,9 +14,10 @@
 from __future__ import annotations
 
 import datetime as _dt
-import json
 import os
 from pathlib import Path
+
+from json_store import read_json, write_json_atomic, now_iso as _now
 
 ROOT = Path(__file__).resolve().parent.parent
 STORE_FILE = ROOT / "data" / "lifecycle.json"
@@ -27,25 +28,12 @@ HALFLIFE_DAYS = int(os.getenv("RVP_FRESHNESS_HALFLIFE_DAYS", "540"))
 
 
 def _load() -> dict:
-    if STORE_FILE.exists():
-        try:
-            d = json.loads(STORE_FILE.read_text(encoding="utf-8"))
-            if isinstance(d, dict):
-                return d
-        except Exception:
-            pass
-    return {}
+    d = read_json(STORE_FILE, {})
+    return d if isinstance(d, dict) else {}
 
 
 def _save(d: dict) -> None:
-    STORE_FILE.parent.mkdir(exist_ok=True)
-    tmp = STORE_FILE.with_suffix(".json.tmp")
-    tmp.write_text(json.dumps(d, ensure_ascii=False, indent=2), encoding="utf-8")
-    os.replace(tmp, STORE_FILE)
-
-
-def _now() -> str:
-    return _dt.datetime.now().isoformat(timespec="seconds")
+    write_json_atomic(STORE_FILE, d)
 
 
 def _parse_date(s: str):

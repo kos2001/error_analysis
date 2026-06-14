@@ -14,12 +14,11 @@
 """
 from __future__ import annotations
 
-import datetime as _dt
-import json
-import os
 from pathlib import Path
 
 import numpy as np
+
+from json_store import read_json, write_json_atomic, now_iso as _now
 
 ROOT = Path(__file__).resolve().parent.parent
 STORE_FILE = ROOT / "data" / "known_issues.json"
@@ -119,25 +118,14 @@ def cluster_from_recommender(reco, *, threshold: float = 0.80, min_size: int = 2
 # Known-Issue 기사 저장소 (git 추적, 영속)
 # --------------------------------------------------------------------------- #
 def _load_envelope() -> dict:
-    if STORE_FILE.exists():
-        try:
-            d = json.loads(STORE_FILE.read_text(encoding="utf-8"))
-            if isinstance(d, dict) and isinstance(d.get("articles"), list):
-                return d
-        except Exception:
-            pass
+    d = read_json(STORE_FILE, None)
+    if isinstance(d, dict) and isinstance(d.get("articles"), list):
+        return d
     return {"schema_version": SCHEMA_VERSION, "articles": []}
 
 
 def _save_envelope(env: dict) -> None:
-    STORE_FILE.parent.mkdir(exist_ok=True)
-    tmp = STORE_FILE.with_suffix(".json.tmp")
-    tmp.write_text(json.dumps(env, ensure_ascii=False, indent=2), encoding="utf-8")
-    os.replace(tmp, STORE_FILE)
-
-
-def _now() -> str:
-    return _dt.datetime.now().isoformat(timespec="seconds")
+    write_json_atomic(STORE_FILE, env)
 
 
 def articles() -> list[dict]:
