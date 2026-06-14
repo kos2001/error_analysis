@@ -644,10 +644,21 @@ def recommend(req: RecommendRequest):
         }
     # 해결 이슈 키로 질의해도 자기 자신은 매치에서 제외
     result = st["reco"].recommend(query_rec, k=req.k, exclude_key=req.key)
+    # 매치에 메타(생성일·FW) 보강 — 수명주기 신선도/경고 산출용
+    for m in result["matches"]:
+        src = st["by_key"].get(m.get("key"), {})
+        m.setdefault("created", src.get("created", ""))
+        m.setdefault("fw_version", src.get("fw_version", ""))
     # 고장모드 기사 주석(P2-4): 매치가 Known-Issue 기사에 속하면 묶어 노출하도록 표시
     try:
         import failure_modes
         failure_modes.annotate(result["matches"])
+    except Exception:
+        pass
+    # 신선도·폐기 수명주기 주석(P2-5): 오래/폐기/대체 사례 경고 + 강등 정렬
+    try:
+        import lifecycle
+        lifecycle.annotate(result["matches"])
     except Exception:
         pass
     out = {
@@ -950,6 +961,35 @@ def knowledge_known_issues():
     """승격된 Known-Issue 기사 목록."""
     import failure_modes
     return {"articles": failure_modes.articles(), "stats": failure_modes.stats()}
+
+
+# ---------------------------------------------------------------------------
+# 신선도·폐기 수명주기 (P2-5)
+# ---------------------------------------------------------------------------
+class LifecycleBody(BaseModel):
+    key: str
+    state: str                       # active | deprecated | superseded
+    superseded_by: str = ""
+    reason: str = ""
+
+
+@app.post("/knowledge/lifecycle")
+def knowledge_lifecycle(req: LifecycleBody):
+    """사례 수명주기 상태 설정(폐기/대체). 폐기·대체 사례는 추천에서 강등·경고."""
+    import lifecycle
+    try:
+        info = lifecycle.set_state(req.key, req.state,
+                                   superseded_by=req.superseded_by, reason=req.reason)
+        _RECO_STATE.clear()
+        return {"ok": True, "lifecycle": info, "stats": lifecycle.stats()}
+    except ValueError as e:
+        return {"ok": False, "error": str(e)}
+
+
+@app.get("/knowledge/lifecycle/stats")
+def knowledge_lifecycle_stats():
+    import lifecycle
+    return {"stats": lifecycle.stats()}
 
 
 @app.post("/reco/reload")

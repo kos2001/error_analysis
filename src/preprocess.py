@@ -132,6 +132,8 @@ def parse_issue(raw: dict) -> dict:
         "key": raw["key"],
         "summary": raw.get("summary", ""),
         "status": raw.get("status", ""),
+        "created": raw.get("created", ""),   # 신선도(수명주기) 가중용
+
         "priority": raw.get("priority", ""),
         "labels": raw.get("labels", []),
         "components": raw.get("components", []),
