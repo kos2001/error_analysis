@@ -172,6 +172,83 @@ def _write_report(result: dict) -> Path:
     return path
 
 
+# --------------------------------------------------------------------------- #
+# L2 — 파라미터 후보를 동결 평가셋에 shadow 평가 + 무회귀 게이트 (가장 안전)
+# --------------------------------------------------------------------------- #
+# 튜닝 가능 파라미터 화이트리스트: {param: (env_override, recommender_kwarg)}.
+# 1차 검색 파라미터만(리랭커 불필요 → shadow 평가가 빠르고 비용 0). 미설정 시 현행 기본값.
+TUNABLE = {
+    "gate_cos": "RVP_GATE_COS",   # coverage 게이트 임베딩 임계
+    "boost": "RVP_BOOST",         # 동일 칩/분류 가산
+}
+# 무회귀 게이트가 지키는 지표(모두 현행 이상이어야 '안전'). 허용 오차 0(엄격).
+_GUARDED = ("P@1", "P@3", "MRR")
+_GUARDED_PARA = ("P@1", "P@3", "MRR", "gate_pass", "junk_blocked")
+
+
+def _resolved_kb():
+    import preprocess
+    raw = json.loads((ROOT / "data" / "all_raw_issues.json").read_text(encoding="utf-8"))
+    records = [preprocess.parse_issue(r) for r in raw]
+    return [r for r in records if r.get("status") == "완료" and not r.get("curated")]
+
+
+def _eval_with(resolved, overrides: dict) -> dict:
+    """주어진 파라미터 override로 Recommender를 만들어 LOO + 동결 paraphrase 평가.
+
+    리랭커 없이(1차 검색 기준) 평가 — 빠르고 외부 비용 0. 동결셋: data/eval_paraphrase.json.
+    """
+    import eval_recommender as ev
+    from recommender import Recommender
+    import os as _os
+    kw = {"method": _os.getenv("RVP_RECO_METHOD", "hybrid_embed"), "rerank": False}
+    kw.update(overrides)
+    rec = Recommender(resolved, **kw)
+    kb_keys = {r["key"] for r in resolved}
+    loo = ev.evaluate(rec, resolved, kb_keys, loo=True, k=3)
+    out = {"loo": loo}
+    para_path = ROOT / "data" / "eval_paraphrase.json"
+    if para_path.exists():
+        out["paraphrase"] = ev.evaluate_paraphrase(rec, json.loads(para_path.read_text(encoding="utf-8")))
+    return out
+
+
+def evaluate_param(param: str, value: float) -> dict:
+    """후보 파라미터 값을 동결 평가셋에 shadow 평가하고 무회귀 여부를 판정(READ-ONLY).
+
+    live 상태(_RECO_STATE)·설정을 일절 건드리지 않는다. safe=True는 모든 가드 지표가
+    현행 이상일 때만(엄격). 안전하다고 자동 적용하지 않음 — 적용은 별도 명시 단계.
+    """
+    if param not in TUNABLE:
+        raise ValueError(f"튜닝 가능 파라미터 아님: {param} (가능: {list(TUNABLE)})")
+    import os as _os
+    resolved = _resolved_kb()
+    cur_val = _os.getenv(TUNABLE[param])
+    cur_overrides = {param: float(cur_val)} if cur_val else {}
+    base = _eval_with(resolved, cur_overrides)
+    cand = _eval_with(resolved, {param: float(value)})
+
+    regressions, deltas = [], {}
+    for setname, guarded in (("loo", _GUARDED), ("paraphrase", _GUARDED_PARA)):
+        b, c = base.get(setname), cand.get(setname)
+        if not (b and c):
+            continue
+        for k in guarded:
+            if k in b and k in c:
+                d = round(c[k] - b[k], 4)
+                deltas[f"{setname}.{k}"] = d
+                if d < 0:
+                    regressions.append(f"{setname}.{k} {b[k]}→{c[k]} ({d})")
+    safe = not regressions
+    return {
+        "param": param, "current_value": cur_val, "candidate_value": value,
+        "current": base, "candidate": cand, "deltas": deltas,
+        "safe": safe, "regressions": regressions,
+        "verdict": ("무회귀 — 적용 안전(수동 적용 필요)" if safe
+                    else f"회귀 발생 — 적용 금지: {'; '.join(regressions)}"),
+    }
+
+
 def main() -> int:
     out = run()
     print(f"[self_improve] {out['metrics']['ts']} — 제안 {len(out['recommendations'])}건")
