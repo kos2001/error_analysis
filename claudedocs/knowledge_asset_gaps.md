@@ -66,6 +66,23 @@
 - 지식이 본 도구에 갇힘(Confluence/위키/외부 API 없음).
 - 보강: 구조화 기사 export(Markdown/JSON) + 읽기 API.
 
+## 구현 현황 (2026-06-14 갱신)
+
+| 항목 | 상태 | 핵심 산출 |
+|---|---|---|
+| P1-1 영속화·Jira 환류 | ✅ | `knowledge_store.py`, `data/knowledge_store.json`, rebuild-from-jira |
+| P1-2 인입 품질 게이트 | ✅ | `quality_gate.py`, `/knowledge/quality`, strict 차단 |
+| P1-3 추천 유용성 피드백 | ✅ | `reco_feedback.py`, 매치 카드 👍/👎, eval_pairs·ROI |
+| P2-4 고장모드 기사 | ✅ | `failure_modes.py`, 클러스터링·승격·매치 주석 |
+| P2-5 신선도·폐기 | ✅ | `lifecycle.py`, freshness·deprecate·강등 |
+| P2-6 온톨로지 거버넌스 | ✅ | `ontology.py`, 동의어 정규화·검토 큐 |
+| P2-7 부정지식 | ✅ | `negative_knowledge.py`, 기각 가설 프롬프트 주입 |
+| P3-8 지식공백 관측성 | ✅ | `knowledge_gaps.py`, `/knowledge/gaps` |
+| P3-9 저자·소유권 | ✅ | `ownership.py`, find-the-expert |
+| P3-10 export·상호운용 | ✅ | `knowledge_export.py`, json/markdown |
+| **자기 개선 loop L1** | ✅ | `self_improve.py`, `/selfcheck` (측정·진단·제안, 무변경) |
+| 자기 개선 loop L2/L3 | ⏳ | 파라미터 자동튜닝+회귀게이트 / 지식변경 HITL 제안 |
+
 ## 권장 착수 순서
 
 1. **P1-1 영속화·Jira 환류** — 자산 소실 리스크 제거가 가장 시급(다른 모든 항목의 토대).
