@@ -992,6 +992,54 @@ def knowledge_lifecycle_stats():
     return {"stats": lifecycle.stats()}
 
 
+# ---------------------------------------------------------------------------
+# 온톨로지 거버넌스 (P2-6)
+# ---------------------------------------------------------------------------
+@app.get("/knowledge/ontology")
+def knowledge_ontology():
+    """통제 어휘(동의어 그룹·통제 분류) 현황."""
+    import ontology
+    return {"vocab": ontology.vocab(), "stats": ontology.stats()}
+
+
+@app.get("/knowledge/ontology/review")
+def knowledge_ontology_review(top: int = 40):
+    """통제 어휘에 없는 엔티티/분류를 빈도순으로 — canonical 승격 검토 큐."""
+    import ontology
+    st = _reco_state()
+    base = [r for r in st["records"] if not r.get("curated")]
+    return ontology.review(base, top=top)
+
+
+class SynonymBody(BaseModel):
+    canonical: str
+    aliases: list[str] = []
+
+
+@app.post("/knowledge/ontology/synonym")
+def knowledge_ontology_synonym(req: SynonymBody):
+    """동의어 그룹 추가/확장(alias→canonical). 다음 재빌드부터 엔티티 통합."""
+    import ontology
+    try:
+        out = ontology.add_synonym(req.canonical, req.aliases)
+        _RECO_STATE.clear()  # 정규화 반영을 위해 KB 재빌드
+        return {"ok": True, "group": out, "stats": ontology.stats()}
+    except ValueError as e:
+        return {"ok": False, "error": str(e)}
+
+
+class CategoriesBody(BaseModel):
+    categories: list[str]
+
+
+@app.post("/knowledge/ontology/categories")
+def knowledge_ontology_categories(req: CategoriesBody):
+    """통제 분류 어휘 설정."""
+    import ontology
+    out = ontology.set_categories(req.categories)
+    return {"ok": True, **out, "stats": ontology.stats()}
+
+
 @app.post("/reco/reload")
 def reco_reload():
     """추천 KB 캐시 무효화 — 새 큐레이션 지식을 서버 재시작 없이 즉시 반영."""

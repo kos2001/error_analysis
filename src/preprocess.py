@@ -64,6 +64,12 @@ def extract_entities(text: str) -> set[str]:
     for pat in KEY_PATTERNS:
         for m in re.finditer(pat, text, flags=re.IGNORECASE):
             ents.add(m.group(0).strip())
+    # 온톨로지 동의어로 정규화(빈 온톨로지면 항등 — 하위호환). 흩어진 표기 통합.
+    try:
+        import ontology
+        ents = ontology.normalize_entities(ents)
+    except Exception:
+        pass
     return ents
 
 
