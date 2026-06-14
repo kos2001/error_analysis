@@ -1099,6 +1099,49 @@ def knowledge_gaps_report(top: int = 20):
 # ---------------------------------------------------------------------------
 # 자기 개선 loop — L1 측정·진단·제안 (무변경)
 # ---------------------------------------------------------------------------
+# ---------------------------------------------------------------------------
+# 저자·소유권 / find-the-expert (P3-9)
+# ---------------------------------------------------------------------------
+class OwnerBody(BaseModel):
+    key: str
+    author: str = ""
+    validator: str = ""
+    role: str = ""
+
+
+@app.post("/knowledge/ownership")
+def knowledge_ownership(req: OwnerBody):
+    """사례/기사의 저자·검증자·역할 기록(책임성·신뢰가중·전문가 탐색용)."""
+    import ownership
+    try:
+        return {"ok": True, "owner": ownership.set_owner(
+            req.key, author=req.author, validator=req.validator, role=req.role),
+            "stats": ownership.stats()}
+    except ValueError as e:
+        return {"ok": False, "error": str(e)}
+
+
+@app.get("/knowledge/experts")
+def knowledge_experts(category: str = "", template: str = "", top: int = 5):
+    """find-the-expert — 고장 클래스별 기여 빈도순 전문가 후보."""
+    import ownership
+    return ownership.experts_for(category=category, template=template, top=top)
+
+
+# ---------------------------------------------------------------------------
+# 지식 export·상호운용 (P3-10)
+# ---------------------------------------------------------------------------
+@app.get("/knowledge/export")
+def knowledge_export(format: str = "json"):
+    """축적 지식 내보내기 — format=json(구조화) | markdown(위키 붙여넣기용)."""
+    import knowledge_export
+    if format == "markdown":
+        from fastapi.responses import PlainTextResponse
+        return PlainTextResponse(knowledge_export.to_markdown(),
+                                 media_type="text/markdown; charset=utf-8")
+    return knowledge_export.bundle()
+
+
 @app.get("/selfcheck")
 def selfcheck(save: bool = True):
     """자기 개선 점검 — 모든 측정 신호 집계 + 직전 대비 드리프트 + 개선 제안.
