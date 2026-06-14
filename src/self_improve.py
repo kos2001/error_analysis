@@ -278,6 +278,22 @@ def suggest(reco=None, records: list[dict] | None = None) -> list[dict]:
         except Exception:
             pass
 
+    # 1b) 지식 모순(같은 고장모드인데 근본원인 엇갈림) → 사람 중재 제안(#2)
+    if reco is not None:
+        try:
+            import contradictions
+            for c in contradictions.detect(reco)[:10]:
+                out.append({
+                    "type": "resolve_contradiction", "priority": "P2",
+                    "target": f"{c['a']}|{c['b']}",
+                    "rationale": f"유사 고장(doc {c['doc_similarity']})인데 근본원인 엇갈림(rc {c['root_cause_similarity']}) — 중재 필요",
+                    "evidence": {"a": c["a"], "b": c["b"], "doc_sim": c["doc_similarity"],
+                                 "rc_sim": c["root_cause_similarity"]},
+                    "action_hint": "두 사례 비교 후 disputed/대체 결정(POST /knowledge/lifecycle)",
+                })
+        except Exception:
+            pass
+
     # 2) 지식 공백(자주 묻지만 사례 없음) → RCA 작성/시드 제안
     try:
         import knowledge_gaps
