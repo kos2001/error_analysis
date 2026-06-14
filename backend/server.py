@@ -27,6 +27,25 @@ from preprocess import parse_issue  # noqa: E402
 from recommender import Recommender, template_key  # noqa: E402
 import app_config  # noqa: E402
 
+# stdlib(반복되던 지연 import 일원화)
+import datetime as _dt  # noqa: E402
+import re  # noqa: E402
+# 지식자산/자기개선 스토어 모듈 — 지연 import를 최상위로 일원화(순환 참조 없음)
+import failure_modes  # noqa: E402
+import improve_queue  # noqa: E402
+import knowledge_export  # noqa: E402
+import knowledge_gaps  # noqa: E402
+import knowledge_store  # noqa: E402
+import lifecycle  # noqa: E402
+import negative_knowledge  # noqa: E402
+import ontology  # noqa: E402
+import ownership  # noqa: E402
+import quality_gate  # noqa: E402
+import rca_feedback  # noqa: E402
+import rca_queue  # noqa: E402
+import reco_feedback  # noqa: E402
+import self_improve  # noqa: E402
+
 # 저장된 온보딩 설정(Hermes Gateway/Jira)을 env에 주입 — 서버 기동 시 1회.
 app_config.load_into_env()
 
@@ -61,7 +80,6 @@ def _reco_state() -> dict:
     unresolved = [r for r in records if r["status"] != RESOLVED_STATUS]
     # 인입 품질 게이트(P1-2): 무음 추출 실패를 서빙 시점에 표면화(차단 아님, 경고).
     try:
-        import quality_gate
         _q = quality_gate.validate(records, resolved_status=RESOLVED_STATUS)
         if not _q["ok"]:
             print("[server] ⚠ KB 품질 경고: " + " / ".join(_q["violations"]))
@@ -71,8 +89,6 @@ def _reco_state() -> dict:
     # 1순위는 영속 저장소(data/knowledge_store.json, git 추적), rca_feedback는 폴백.
     # 동일 key는 영속 저장소 우선으로 dedupe.
     try:
-        import knowledge_store
-        import rca_feedback
         curated, seen = [], set()
         for r in knowledge_store.kb_records() + rca_feedback.kb_records():
             if r["key"] in seen:
@@ -301,9 +317,8 @@ class RecoFeedbackBody(BaseModel):
 
 
 @app.post("/reco/feedback")
-def reco_feedback(req: RecoFeedbackBody):
+def reco_feedback_record(req: RecoFeedbackBody):  # 함수명: 모듈 reco_feedback과 충돌 회피
     """추천 유용성/결과 피드백 기록(P1-3) — 도움됨·아님, 실제 근본원인 여부."""
-    import reco_feedback
     try:
         ev = reco_feedback.record(
             query_key=req.query_key, match_key=req.match_key, rating=req.rating,
@@ -319,7 +334,6 @@ def reco_feedback(req: RecoFeedbackBody):
 @app.get("/reco/feedback/stats")
 def reco_feedback_stats():
     """유용성 집계 + ROI 프록시 + 실전형 평가셋 정답 쌍."""
-    import reco_feedback
     return {"stats": reco_feedback.stats(), "eval_pairs": reco_feedback.eval_pairs()}
 
 
@@ -467,7 +481,6 @@ def _llm_explain(query_rec: dict, matches: list[dict]) -> dict:
     agno output_schema 로 구조화 출력 → cited_keys 를 매치 키와 대조 검증해
     환각 인용을 제거(기존 정규식 인용 게이트를 구조적으로 대체).
     """
-    import re
     prompt = _explain_prompt(query_rec, matches)
     valid_keys = {m["key"] for m in matches}
     if ENGINE == "hermes":
@@ -511,7 +524,6 @@ def _explain_prompt_md(query_rec: dict, match_recs: list[dict]) -> str:
     # 성능 개선 루프: 사람이 검토·수정한 과거 분석을 문체/수준 가이드(few-shot)로 주입
     fewshot = ""
     try:
-        import rca_feedback
         # 같은 고장 클래스(동일 템플릿/분류)의 사람 수정만 — 무관 이슈 예시 주입 방지
         ex = rca_feedback.relevant_edits(category=q.get("category", ""),
                                          template=template_key(q.get("summary", "")),
@@ -525,7 +537,6 @@ def _explain_prompt_md(query_rec: dict, match_recs: list[dict]) -> str:
     # 부정지식(P2-7): 질의·근거 사례에서 이미 기각된 가설을 주입 → 재안 방지
     negatives = ""
     try:
-        import negative_knowledge
         keys = [k for k in [query_rec.get("key")] if k] + [r.get("key") for r in match_recs]
         negatives = negative_knowledge.prompt_block(keys)
     except Exception:
@@ -613,7 +624,6 @@ def explain_stream(key: Optional[str] = None, summary: str = "", symptom: str = 
         if not matches or not coverage:
             yield f"data: {json.dumps({'type': 'done', 'citations': [], 'no_coverage': True}, ensure_ascii=False)}\n\n"
             return
-        import re
         valid = {m["key"] for m in matches}
         # 근거 컨텍스트 강화: 매치를 전체 레코드(증상/디버깅 접근 포함)로 확장
         match_recs = [st["by_key"].get(m["key"], m) for m in matches]
@@ -662,13 +672,11 @@ def recommend(req: RecommendRequest):
         m.setdefault("fw_version", src.get("fw_version", ""))
     # 고장모드 기사 주석(P2-4): 매치가 Known-Issue 기사에 속하면 묶어 노출하도록 표시
     try:
-        import failure_modes
         failure_modes.annotate(result["matches"])
     except Exception:
         pass
     # 신선도·폐기 수명주기 주석(P2-5): 오래/폐기/대체 사례 경고 + 강등 정렬
     try:
-        import lifecycle
         lifecycle.annotate(result["matches"])
     except Exception:
         pass
@@ -684,7 +692,6 @@ def recommend(req: RecommendRequest):
     # 지식 공백 관측성(P3-8): coverage 미통과 질의를 공백 신호로 기록(자기 개선 loop 입력)
     if not out["coverage"]:
         try:
-            import knowledge_gaps
             gate = result.get("gate") or {}
             knowledge_gaps.record(query_rec, reason="no_coverage",
                                   template=template_key(query_rec.get("summary", "")),
@@ -757,7 +764,6 @@ def _md_to_jira(md: str) -> str:
     헤딩 #..# → h1.~h6., **굵게** → *굵게*, '- ' 글머리 → '* ', 표 → Jira 표. 본문/큐/
     미리보기는 마크다운 정본을 유지하고, 게시 시점에만 변환한다.
     """
-    import re
     md = _convert_md_tables(md)                       # 표 먼저 변환(헤딩/글머리 처리 전)
     lines = []
     for ln in md.split("\n"):
@@ -814,8 +820,6 @@ class KeyBody(BaseModel):
 @app.post("/rca/draft")
 def rca_draft(req: KeyBody):
     """미해결 이슈에 대한 RCA 댓글 초안 생성 → 승인 큐(pending)에 적재. Jira 쓰기 없음."""
-    import datetime as _dt
-    import rca_queue
     st = _reco_state()
     rec = st["by_key"].get(req.key)
     if not rec:
@@ -851,9 +855,6 @@ class AnalysisDraftBody(BaseModel):
 @app.post("/rca/draft-from-analysis")
 def rca_draft_from_analysis(req: AnalysisDraftBody):
     """시니어 종합 분석(LLM)을 RCA 댓글 본문으로 → 승인 큐. 생성물이라 항상 검토 필요."""
-    import datetime as _dt
-    import re
-    import rca_queue
     st = _reco_state()
     rec = st["by_key"].get(req.key)
     if not rec:
@@ -883,7 +884,6 @@ def rca_draft_from_analysis(req: AnalysisDraftBody):
 
 @app.get("/rca/pending")
 def rca_pending():
-    import rca_queue
     return {"items": rca_queue.items("pending"), "counts": rca_queue.counts()}
 
 
@@ -895,10 +895,6 @@ class ApproveBody(BaseModel):
 @app.post("/rca/approve")
 def rca_approve(req: ApproveBody):
     """HITL 게이트 — 사람 승인(+수정) 시에만 Jira에 게시. 수정 내용은 피드백에 기록."""
-    import datetime as _dt
-    import rca_queue
-    import rca_feedback
-    import knowledge_store
     item = rca_queue.get(req.key)
     if not item:
         return {"error": "큐에 없음"}
@@ -942,7 +938,6 @@ def rca_approve(req: ApproveBody):
 
 @app.get("/rca/feedback")
 def rca_feedback_stats():
-    import rca_feedback
     return {"stats": rca_feedback.stats(), "recent_edits": rca_feedback.recent_edits(5)}
 
 
@@ -952,14 +947,12 @@ def rca_feedback_stats():
 @app.get("/knowledge/stats")
 def knowledge_stats():
     """영속 큐레이션 지식 저장소 현황(건수·출처·저장 경로)."""
-    import knowledge_store
     return {"knowledge": knowledge_store.stats()}
 
 
 @app.get("/knowledge/quality")
 def knowledge_quality():
     """인입 KB 품질 리포트(P1-2) — 상태별 필드 충족률 + 무음 실패 의심 키."""
-    import quality_gate
     st = _reco_state()
     # 큐레이션(-rca) 항목 제외하고 원본 인입 KB만 평가
     base = [r for r in st["records"] if not r.get("curated")]
@@ -972,7 +965,6 @@ def knowledge_quality():
 @app.get("/knowledge/clusters")
 def knowledge_clusters(threshold: float = 0.80, min_size: int = 2):
     """해결 KB 임베딩 군집 → 고장모드 후보(중복 사례 묶음). 승격 검토용."""
-    import failure_modes
     st = _reco_state()
     clusters = failure_modes.cluster_from_recommender(
         st["reco"], threshold=threshold, min_size=min_size)
@@ -995,7 +987,6 @@ class PromoteBody(BaseModel):
 @app.post("/knowledge/known-issue")
 def knowledge_promote(req: PromoteBody):
     """후보 군집(또는 선택 사례)을 정규 Known-Issue 기사로 승격/갱신."""
-    import failure_modes
     st = _reco_state()
     by_key = st["by_key"]
     # 본문 미지정 시 대표(검증 우선) 사례에서 정규 내용 자동 채움 — 사람이 추후 정제
@@ -1025,7 +1016,6 @@ def knowledge_promote(req: PromoteBody):
 @app.get("/knowledge/known-issues")
 def knowledge_known_issues():
     """승격된 Known-Issue 기사 목록."""
-    import failure_modes
     return {"articles": failure_modes.articles(), "stats": failure_modes.stats()}
 
 
@@ -1042,7 +1032,6 @@ class LifecycleBody(BaseModel):
 @app.post("/knowledge/lifecycle")
 def knowledge_lifecycle(req: LifecycleBody):
     """사례 수명주기 상태 설정(폐기/대체). 폐기·대체 사례는 추천에서 강등·경고."""
-    import lifecycle
     try:
         info = lifecycle.set_state(req.key, req.state,
                                    superseded_by=req.superseded_by, reason=req.reason)
@@ -1054,7 +1043,6 @@ def knowledge_lifecycle(req: LifecycleBody):
 
 @app.get("/knowledge/lifecycle/stats")
 def knowledge_lifecycle_stats():
-    import lifecycle
     return {"stats": lifecycle.stats()}
 
 
@@ -1064,14 +1052,12 @@ def knowledge_lifecycle_stats():
 @app.get("/knowledge/ontology")
 def knowledge_ontology():
     """통제 어휘(동의어 그룹·통제 분류) 현황."""
-    import ontology
     return {"vocab": ontology.vocab(), "stats": ontology.stats()}
 
 
 @app.get("/knowledge/ontology/review")
 def knowledge_ontology_review(top: int = 40):
     """통제 어휘에 없는 엔티티/분류를 빈도순으로 — canonical 승격 검토 큐."""
-    import ontology
     st = _reco_state()
     base = [r for r in st["records"] if not r.get("curated")]
     return ontology.review(base, top=top)
@@ -1085,7 +1071,6 @@ class SynonymBody(BaseModel):
 @app.post("/knowledge/ontology/synonym")
 def knowledge_ontology_synonym(req: SynonymBody):
     """동의어 그룹 추가/확장(alias→canonical). 다음 재빌드부터 엔티티 통합."""
-    import ontology
     try:
         out = ontology.add_synonym(req.canonical, req.aliases)
         _RECO_STATE.clear()  # 정규화 반영을 위해 KB 재빌드
@@ -1101,7 +1086,6 @@ class CategoriesBody(BaseModel):
 @app.post("/knowledge/ontology/categories")
 def knowledge_ontology_categories(req: CategoriesBody):
     """통제 분류 어휘 설정."""
-    import ontology
     out = ontology.set_categories(req.categories)
     return {"ok": True, **out, "stats": ontology.stats()}
 
@@ -1118,7 +1102,6 @@ class NegativeBody(BaseModel):
 @app.post("/knowledge/negative")
 def knowledge_negative(req: NegativeBody):
     """기각된 가설 기록 — 심층 분석 시 재안 방지에 활용."""
-    import negative_knowledge
     try:
         out = negative_knowledge.add(req.key, req.hypothesis, req.reason,
                                      author=os.getenv("JIRA_EMAIL", ""))
@@ -1130,7 +1113,6 @@ def knowledge_negative(req: NegativeBody):
 @app.get("/knowledge/negative")
 def knowledge_negative_get(key: str):
     """특정 이슈의 기각된 가설 목록."""
-    import negative_knowledge
     return {"key": key, "rejected": negative_knowledge.get(key), "stats": negative_knowledge.stats()}
 
 
@@ -1140,7 +1122,6 @@ def knowledge_negative_get(key: str):
 @app.get("/knowledge/gaps")
 def knowledge_gaps_report(top: int = 20):
     """지식 공백 대시보드 — 자주 질의되나 사례 없는(coverage 미통과) 영역 집계."""
-    import knowledge_gaps
     return knowledge_gaps.report(top=top)
 
 
@@ -1160,7 +1141,6 @@ class OwnerBody(BaseModel):
 @app.post("/knowledge/ownership")
 def knowledge_ownership(req: OwnerBody):
     """사례/기사의 저자·검증자·역할 기록(책임성·신뢰가중·전문가 탐색용)."""
-    import ownership
     try:
         return {"ok": True, "owner": ownership.set_owner(
             req.key, author=req.author, validator=req.validator, role=req.role),
@@ -1172,7 +1152,6 @@ def knowledge_ownership(req: OwnerBody):
 @app.get("/knowledge/experts")
 def knowledge_experts(category: str = "", template: str = "", top: int = 5):
     """find-the-expert — 고장 클래스별 기여 빈도순 전문가 후보."""
-    import ownership
     return ownership.experts_for(category=category, template=template, top=top)
 
 
@@ -1180,9 +1159,8 @@ def knowledge_experts(category: str = "", template: str = "", top: int = 5):
 # 지식 export·상호운용 (P3-10)
 # ---------------------------------------------------------------------------
 @app.get("/knowledge/export")
-def knowledge_export(format: str = "json"):
+def knowledge_export_endpoint(format: str = "json"):  # 함수명: 모듈 knowledge_export과 충돌 회피
     """축적 지식 내보내기 — format=json(구조화) | markdown(위키 붙여넣기용)."""
-    import knowledge_export
     if format == "markdown":
         from fastapi.responses import PlainTextResponse
         return PlainTextResponse(knowledge_export.to_markdown(),
@@ -1196,7 +1174,6 @@ def selfcheck(save: bool = True):
 
     부작용 없음(지식 불변). save=true면 이력·날짜별 리포트 기록.
     """
-    import self_improve
     st = _reco_state()
     return self_improve.run(st["records"], save=save)
 
@@ -1212,7 +1189,6 @@ def selfcheck_evaluate_param(req: ParamEvalBody):
 
     무회귀일 때만 safe=true. 안전해도 자동 적용 안 함 — apply는 별도 명시 호출.
     """
-    import self_improve
     try:
         return self_improve.evaluate_param(req.param, req.value)
     except ValueError as e:
@@ -1225,7 +1201,6 @@ def selfcheck_apply_param(req: ParamEvalBody):
 
     회귀하면 거부. value를 비우면 override 제거(기본값 복귀). 사람이 명시 호출하는 단계.
     """
-    import self_improve, app_config
     env_key = self_improve.TUNABLE.get(req.param)
     if not env_key:
         return {"ok": False, "error": f"튜닝 가능 파라미터 아님: {req.param}"}
@@ -1242,7 +1217,6 @@ def selfcheck_apply_param(req: ParamEvalBody):
 @app.post("/selfcheck/reset-param")
 def selfcheck_reset_param(param: str):
     """L2 되돌리기 — 파라미터 override 제거(클래스 기본값 복귀)."""
-    import self_improve, app_config
     env_key = self_improve.TUNABLE.get(param)
     if not env_key:
         return {"ok": False, "error": f"튜닝 가능 파라미터 아님: {param}"}
@@ -1257,7 +1231,6 @@ def selfcheck_reset_param(param: str):
 @app.post("/improve/suggest")
 def improve_suggest():
     """신호에서 지식 변경 제안을 도출해 큐에 병합(거부/완료 상태 보존). loop는 실행 안 함."""
-    import self_improve, improve_queue
     st = _reco_state()
     base = [r for r in st["records"] if not r.get("curated")]
     generated = self_improve.suggest(reco=st["reco"], records=base)
@@ -1268,7 +1241,6 @@ def improve_suggest():
 @app.get("/improve/queue")
 def improve_queue_list(state: str = "open"):
     """제안 큐 조회(기본 open)."""
-    import improve_queue
     return {"items": improve_queue.items(state), "counts": improve_queue.counts()}
 
 
@@ -1280,7 +1252,6 @@ class SuggestStateBody(BaseModel):
 @app.post("/improve/queue/state")
 def improve_queue_state(req: SuggestStateBody):
     """제안 상태 변경(사람 결정: done 완료 / dismissed 거부)."""
-    import improve_queue
     try:
         it = improve_queue.set_state(req.id, req.state)
         return {"ok": bool(it), "item": it, "counts": improve_queue.counts()}
@@ -1302,7 +1273,6 @@ def knowledge_rebuild_from_jira():
 
     로컬 data/knowledge_store.json 유실 시에도 Jira에서 큐레이션 지식을 복원.
     """
-    import knowledge_store
     try:
         out = knowledge_store.rebuild_from_jira(BOT_MARKER)
         _RECO_STATE.clear()  # 복원된 지식 즉시 반영
@@ -1313,7 +1283,6 @@ def knowledge_rebuild_from_jira():
 
 @app.post("/rca/reject")
 def rca_reject(req: KeyBody):
-    import rca_queue
     updated = rca_queue.set_state(req.key, "rejected")
     return {"ok": bool(updated), "item": updated, "counts": rca_queue.counts()}
 
@@ -1356,8 +1325,6 @@ class ValidateBody(BaseModel):
 def rca_validate(req: ValidateBody):
     """수정사항 검증 — (1) 가드레일: 인용 키 ⊆ KB, 한자/CJK, 빈값  (2) Agent-as-Judge:
     근거 충실도·인용 정합·실행가능성 1~10 채점. 승인 전 품질 확인용(차단 아님)."""
-    import re
-    import rca_queue
     st = _reco_state()
     body = (req.body if (req.body and req.body.strip()) else (rca_queue.get(req.key) or {}).get("body", "")).strip()
     if not body:
