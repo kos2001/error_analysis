@@ -644,6 +644,12 @@ def recommend(req: RecommendRequest):
         }
     # 해결 이슈 키로 질의해도 자기 자신은 매치에서 제외
     result = st["reco"].recommend(query_rec, k=req.k, exclude_key=req.key)
+    # 고장모드 기사 주석(P2-4): 매치가 Known-Issue 기사에 속하면 묶어 노출하도록 표시
+    try:
+        import failure_modes
+        failure_modes.annotate(result["matches"])
+    except Exception:
+        pass
     out = {
         "query": {"key": query_rec.get("key"), "summary": query_rec.get("summary"),
                   "symptom": query_rec.get("symptom"), "chip": query_rec.get("chip"),
@@ -881,6 +887,69 @@ def knowledge_quality():
     # 큐레이션(-rca) 항목 제외하고 원본 인입 KB만 평가
     base = [r for r in st["records"] if not r.get("curated")]
     return quality_gate.validate(base, resolved_status=RESOLVED_STATUS)
+
+
+# ---------------------------------------------------------------------------
+# 고장모드(Known-Issue) 기사 계층 (P2-4)
+# ---------------------------------------------------------------------------
+@app.get("/knowledge/clusters")
+def knowledge_clusters(threshold: float = 0.80, min_size: int = 2):
+    """해결 KB 임베딩 군집 → 고장모드 후보(중복 사례 묶음). 승격 검토용."""
+    import failure_modes
+    st = _reco_state()
+    clusters = failure_modes.cluster_from_recommender(
+        st["reco"], threshold=threshold, min_size=min_size)
+    return {"threshold": threshold, "min_size": min_size,
+            "count": len(clusters), "clusters": clusters, "stats": failure_modes.stats()}
+
+
+class PromoteBody(BaseModel):
+    title: str
+    members: list[str]
+    failure_summary: str = ""
+    root_cause: str = ""
+    resolution: str = ""
+    workaround: str = ""
+    chips: Optional[list] = None
+    categories: Optional[list] = None
+    article_id: str = ""             # 지정 시 기존 기사 갱신(멤버 합집합)
+
+
+@app.post("/knowledge/known-issue")
+def knowledge_promote(req: PromoteBody):
+    """후보 군집(또는 선택 사례)을 정규 Known-Issue 기사로 승격/갱신."""
+    import failure_modes
+    st = _reco_state()
+    by_key = st["by_key"]
+    # 본문 미지정 시 대표(검증 우선) 사례에서 정규 내용 자동 채움 — 사람이 추후 정제
+    rc, rs, wa = req.root_cause, req.resolution, req.workaround
+    if not (rc or rs):
+        rep = next((by_key[m] for m in req.members
+                    if by_key.get(m, {}).get("verified")), None) \
+            or next((by_key[m] for m in req.members if m in by_key), None)
+        if rep:
+            rc = rc or rep.get("root_cause", "")
+            rs = rs or rep.get("resolution", "")
+            wa = wa or rep.get("workaround", "")
+    chips = req.chips or sorted({by_key[m].get("chip", "") for m in req.members
+                                 if by_key.get(m, {}).get("chip")})
+    cats = req.categories or sorted({by_key[m].get("category", "") for m in req.members
+                                     if by_key.get(m, {}).get("category")})
+    try:
+        art = failure_modes.promote(
+            title=req.title, members=req.members, failure_summary=req.failure_summary,
+            root_cause=rc, resolution=rs, workaround=wa, chips=chips, categories=cats,
+            author=os.getenv("JIRA_EMAIL", ""), article_id=req.article_id)
+        return {"ok": True, "article": art, "stats": failure_modes.stats()}
+    except ValueError as e:
+        return {"ok": False, "error": str(e)}
+
+
+@app.get("/knowledge/known-issues")
+def knowledge_known_issues():
+    """승격된 Known-Issue 기사 목록."""
+    import failure_modes
+    return {"articles": failure_modes.articles(), "stats": failure_modes.stats()}
 
 
 @app.post("/reco/reload")

@@ -12,6 +12,7 @@ type Match = {
   key: string; score: number; summary: string; chip: string; category: string;
   root_cause: string; resolution: string; workaround: string; debug_approach: string;
   embed_cos?: number; entity_overlap?: number; bm25_raw?: number; rerank_score?: number; verified?: boolean;
+  known_issue?: { id: string; title: string };   // 소속 고장모드 기사(P2-4)
 };
 type Proposal = { root_cause: string; resolution: string; workaround: string; based_on: string; confidence: number };
 type RecoResp = { query: any; matches: Match[]; proposal: Proposal | null; coverage: boolean; explanation?: string; explanation_citations?: string[]; explanation_dropped_citations?: string[] };
@@ -287,6 +288,27 @@ export default function FailureAnalysis({ onQueueChange }: { onQueueChange?: () 
     } catch { /* 피드백 실패는 조용히 무시(분석 흐름 방해 금지) */ }
   };
 
+  // P2-4 고장모드 기사로 묶기 — 아직 기사에 속하지 않은 현재 매치들을 승격
+  const [promoting, setPromoting] = useState(false);
+  const [promoteMsg, setPromoteMsg] = useState("");
+  const promoteMatches = async () => {
+    const ms = reco?.matches ?? [];
+    const free = ms.filter((m) => !m.known_issue).map((m) => m.key);
+    if (free.length < 2) return;
+    const title = (sel?.summary ?? reco?.query?.summary ?? "고장모드").slice(0, 80);
+    setPromoting(true); setPromoteMsg("");
+    try {
+      const d = await fetch(`${API}/knowledge/known-issue`, {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ title, members: free }),
+      }).then((r) => r.json());
+      if (d.ok) {
+        setPromoteMsg(`✓ 고장모드 기사 ${d.article.id} 생성 — ${free.length}건 묶음`);
+        if (sel) select(sel);                // 재조회로 기사 배지 반영
+      } else setPromoteMsg(`⚠ ${d.error || "승격 실패"}`);
+    } catch (e: any) { setPromoteMsg(`⚠ ${e.message}`); } finally { setPromoting(false); }
+  };
+
   // Jira 번호(또는 그래프 노드 클릭) → 유사 사례 검색 + 에이전트(LLM) 종합 분석
   const goKey = async (raw: string) => {
     const t = raw.trim().toUpperCase();
@@ -505,7 +527,26 @@ export default function FailureAnalysis({ onQueueChange }: { onQueueChange?: () 
 
                     {/* 유사 사례 */}
                     <section>
-                      <h3 className="font-semibold text-slate-700 mb-3">유사 과거 해결 사례 {reco.matches.length}건</h3>
+                      <div className="flex items-center gap-2 mb-3">
+                        <h3 className="font-semibold text-slate-700">유사 과거 해결 사례 {reco.matches.length}건</h3>
+                        {reco.matches.filter((m) => !m.known_issue).length >= 2 && (
+                          <button onClick={promoteMatches} disabled={promoting}
+                            title="아직 기사에 속하지 않은 매치들을 하나의 고장모드(Known-Issue) 기사로 묶습니다"
+                            className="ml-auto text-[11px] px-2 py-0.5 rounded border border-indigo-300 text-indigo-600 hover:bg-indigo-50 disabled:opacity-50">
+                            {promoting ? "묶는 중…" : "📚 고장모드 기사로 묶기"}
+                          </button>
+                        )}
+                      </div>
+                      {promoteMsg && <div className="text-[11px] text-slate-500 mb-2">{promoteMsg}</div>}
+                      {(() => {
+                        const arts = Array.from(new Map(reco.matches.filter((m) => m.known_issue)
+                          .map((m) => [m.known_issue!.id, m.known_issue!])).values());
+                        return arts.length > 0 ? (
+                          <div className="mb-3 text-[11px] text-indigo-700 bg-indigo-50 border border-indigo-200 rounded-lg px-3 py-2">
+                            📚 이 사례들은 고장모드 기사로 묶여 있습니다: {arts.map((a) => `${a.id} ${a.title}`).join(" · ")}
+                          </div>
+                        ) : null;
+                      })()}
                       <div className="space-y-3">
                         {reco.matches.map((m, mi) => (
                           <div key={m.key} className="bg-white rounded-xl border border-slate-200 p-4">
@@ -515,6 +556,9 @@ export default function FailureAnalysis({ onQueueChange }: { onQueueChange?: () 
                               <span className="text-[10px] px-1.5 py-0.5 rounded bg-slate-100 text-slate-500">{m.chip}</span>
                               {m.verified && (
                                 <span className="text-[10px] px-1.5 py-0.5 rounded bg-emerald-50 text-emerald-600" title="해결 검증 + 고객 확인 완료">✓ 검증됨</span>
+                              )}
+                              {m.known_issue && (
+                                <span className="text-[10px] px-1.5 py-0.5 rounded bg-indigo-50 text-indigo-600" title={`고장모드 기사: ${m.known_issue.title}`}>📚 {m.known_issue.id}</span>
                               )}
                               <span className="ml-auto text-[10px] text-slate-400 flex items-center gap-2" title="관련도=reranker 재순위 점수(카드 정렬 기준) · 임베딩=bi-encoder 코사인">
                                 {m.rerank_score != null ? (
