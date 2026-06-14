@@ -124,6 +124,33 @@
       "schema_version": 1,
       "verified": true,
       "curated": true
+    },
+    {
+      "key": "LSI-215-rca",
+      "source_issue": "LSI-215",
+      "comment_id": "11283",
+      "summary": "[NFC-CTRL-N3] 다중 태그 환경에서 Type A anticollision 실패로 태그 인식 불가 (Pioneer Drone / Android NFC stack (NCI 2.3))",
+      "category": "Firmware",
+      "template": "다중 태그 환경에서 Type A anticollision 실패로 태그 인식 불가",
+      "symptom": "NFC-A 태그 2장이 겹쳐 있으면 둘 다 인식하지 못합니다. 단일 태그는 정상. Digital Protocol v2.4의 SDD(Single Device Detection) 절차 문제로 보입니다.",
+      "chip": "NFC-CTRL-N3",
+      "citations": [
+        "LSI-207",
+        "LSI-223",
+        "LSI-231",
+        "LSI-239"
+      ],
+      "root_cause": "SDD 충돌 비트 위치 계산에서 anticollision frame의 비트 단위 정렬을 바이트 경계로 반올림하는 버그. Digital Protocol v2.4 §6.7.2의 bit-oriented anticollision을 byte 단위로만 구현하여 충돌 위치가 바이트 내부일 때 NVB(Number of Valid Bits) 계산이 틀어짐. (LSI-207)",
+      "resolution": "1. SDD 루틴을 현재 byte 단위 구현에서 비트 단위 collision position 추적으로 재구현. 이는 하드웨어 레지스터 수준에서 비트 단위 충돌 감지 기능을 활용해야 함. (LSI-207, LSI-239, LSI-223, LSI-231)\n2. 재구현 후 NFC Forum DTA(Device Test Application)의 anticollision 시나리오 전 항목을 통과시켜 검증. (LSI-207)\n3. Android NFC stack (NCI 2.3)과의 호환성 테스트를 수행하여 host stack과의 상호작용 확인. (사례에는 직접 없으나, 기존 사례들이 Android/Linux host에서 동일 원인으로 해결되었으므로 필요)\n4. 통계적 테스트(예: 100회 반복)를 통해 다중 태그 환경에서 100% 인식 성공 확인. (LSI-223, LSI-231의 통계적 특성화 접근)",
+      "workaround": "- 사용자에게 태그를 한 장씩 접촉하도록 안내. (LSI-207, LSI-239, LSI-223, LSI-231)\n- 리더 모드 retry 간격을 단축하여 체감 개선 (예: 20ms → 5ms). 단, 이는 근본 해결이 아니라 발생 빈도를 낮추는 것. (LSI-207, LSI-239, LSI-223, LSI-231)",
+      "content_text": "🤖 **자동 근본원인 분석** (RCA-bot · AI 심층 분석 · 근거: LSI-207, LSI-223, LSI-231, LSI-239)\n\n### 🎯 예상 근본원인\nSDD 충돌 비트 위치 계산에서 anticollision frame의 비트 단위 정렬을 바이트 경계로 반올림하는 버그. Digital Protocol v2.4 §6.7.2의 bit-oriented anticollision을 byte 단위로만 구현하여 충돌 위치가 바이트 내부일 때 NVB(Number of Valid Bits) 계산이 틀어짐. (LSI-207)\n\n### 🔍 증상→원인 인과 분석\n관찰 증상: NFC-A 태그 2장이 겹쳐 있으면 둘 다 인식하지 못하고, 단일 태그는 정상. 이는 SDD 절차에서 충돌 발생 시 충돌 비트 위치를 정확히 파악하지 못해 재시도가 실패하기 때문. Digital Protocol v2.4에 따르면 Type A anticollision은 bit-oriented 방식으로, 각 비트 위치에서 충돌을 감지하고 NVB를 조정해야 함. 그런데 구현이 byte 경계로 반올림하여 충돌 지점이 바이트 내부에 있으면 NVB 값이 잘못 계산됨. 이로 인해 해당 충돌 비트를 포함한 프레임이 없어지거나 잘못된 응답을 유도하여 두 태그 모두 식별 불가. (LSI-207, LSI-239). 단일 태그는 충돌이 없으므로 NVB 계산 경로가 정상 작동. 이는 펌웨어의 bit-level 처리 부재를 시사함. (LSI-223, LSI-231의 통계적 특성화 관점에서, 이 이슈는 조건부로 항상 발생하므로 원인이 확정적)\n\n### ✅ 권장 해결 단계\n1. SDD 루틴을 현재 byte 단위 구현에서 비트 단위 collision position 추적으로 재구현. 이는 하드웨어 레지스터 수준에서 비트 단위 충돌 감지 기능을 활용해야 함. (LSI-207, LSI-239, LSI-223, LSI-231)\n2. 재구현 후 NFC Forum DTA(Device Test Application)의 anticollision 시나리오 전 항목을 통과시켜 검증. (LSI-207)\n3. Android NFC stack (NCI 2.3)과의 호환성 테스트를 수행하여 host stack과의 상호작용 확인. (사례에는 직접 없으나, 기존 사례들이 Android/Linux host에서 동일 원인으로 해결되었으므로 필요)\n4. 통계적 테스트(예: 100회 반복)를 통해 다중 태그 환경에서 100% 인식 성공 확인. (LSI-223, LSI-231의 통계적 특성화 접근)\n\n### ↪ 임시 우회책\n- 사용자에게 태그를 한 장씩 접촉하도록 안내. (LSI-207, LSI-239, LSI-223, LSI-231)\n- 리더 모드 retry 간격을 단축하여 체감 개선 (예: 20ms → 5ms). 단, 이는 근본 해결이 아니라 발생 빈도를 낮추는 것. (LSI-207, LSI-239, LSI-223, LSI-231)\n\n### 🔬 근본원인 검증 방법\n1. 프로토콜 분석기로 실제 SDD 프레임 교환을 캡처: 충돌 시점의 NVB 값과 실제 충돌 비트 위치를 비교. 정상적인 bit-oriented 구현이라면 NVB가 충돌 직전 유효 비트 수를 가리켜야 하나, 현재 구현에서는 바이트 정렬로 반올림된 값을 보일 것임. (LSI-207의 datasheet 마진과 실측 corner 비교 접근)\n2. 펌웨어 로그에서 anticollision 루틴의 trace를 확인: 충돌 비트 위치 계산 결과가 바이트 경계로 반올림되는지 여부. (LSI-239의 timing race trace 접근)\n3. 단일 태그와 다중 태그 환경에서 동일한 절차의 로그를 비교: 단일 태그에서는 충돌 없음 → NVB 계산 경로가 충돌 처리 루틴을 타지 않음. 다중 태그에서는 충돌 발생 시 NVB 계산이 잘못되어 태그 인식 실패. (LSI-223, LSI-\n\n_과거 해결 이슈 기반 AI 심층 분석 (사람 승인 후 게시)._",
+      "author": "oseok.kim2001@gmail.com",
+      "approved_at": "2026-06-14T22:00:24",
+      "updated_at": "2026-06-14T22:00:24",
+      "content_hash": "7ddc07a3d3f4",
+      "schema_version": 1,
+      "verified": true,
+      "curated": true
     }
   ]
 }
