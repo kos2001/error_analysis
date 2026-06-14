@@ -42,6 +42,7 @@ def snapshot(records: list[dict] | None = None) -> dict:
     import lifecycle
     import ontology
     import negative_knowledge
+    import outcome_tracker
 
     if records is None:
         import preprocess
@@ -57,6 +58,7 @@ def snapshot(records: list[dict] | None = None) -> dict:
                        "fill": (quality.get("report") or {}).get("fill", {}),
                        "deficient": len((quality.get("report") or {}).get("deficient_resolved_keys", []))},
         "knowledge_gaps": _safe(lambda: knowledge_gaps.report(top=10), {}),
+        "outcomes": _safe(outcome_tracker.report, {}),
         "assets": {
             "curated_knowledge": _safe(knowledge_store.stats, {}),
             "known_issues": _safe(failure_modes.stats, {}),
@@ -78,6 +80,10 @@ def recommendations(snap: dict) -> list[dict]:
     if not snap.get("kb_quality", {}).get("ok", True):
         out.append({"priority": "P1", "area": "KB 품질",
                     "action": f"품질 게이트 위반: {snap['kb_quality'].get('violations')} — 인입 마커/추출 점검"})
+    oc = snap.get("outcomes", {})
+    if oc.get("efficacy_rate") is not None and oc["efficacy_rate"] < 0.5 and oc.get("total_tracked", 0) >= 4:
+        out.append({"priority": "P1", "area": "효능",
+                    "action": f"게시 RCA 효능율 {oc['efficacy_rate']} < 0.5 — 미해결 잔존 사례 재검토/대체 필요"})
     gaps = snap.get("knowledge_gaps", {}).get("top_underserved_templates", [])
     if gaps:
         top = ", ".join(f"{g['template'][:24]}({g['count']})" for g in gaps[:3])
@@ -109,6 +115,7 @@ def _key_metrics(snap: dict) -> dict:
         "feedback_total": fb.get("total", 0),
         "roi_queries": fb.get("actual_root_cause_queries", 0),
         "kb_quality_ok": snap.get("kb_quality", {}).get("ok"),
+        "efficacy_rate": snap.get("outcomes", {}).get("efficacy_rate"),
         "gap_events": snap.get("knowledge_gaps", {}).get("total_gap_events", 0),
         "curated": snap.get("assets", {}).get("curated_knowledge", {}).get("total", 0),
         "known_issues": snap.get("assets", {}).get("known_issues", {}).get("total_articles", 0),

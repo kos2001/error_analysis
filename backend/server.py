@@ -1039,6 +1039,28 @@ def knowledge_gaps_report(top: int = 20):
 
 
 # ---------------------------------------------------------------------------
+# 결과·효능 추적 (자기개선 #1)
+# ---------------------------------------------------------------------------
+@app.post("/knowledge/outcomes/refresh")
+def knowledge_outcomes_refresh():
+    """게시된 RCA 대상 이슈의 현재 Jira 상태를 조회해 효능(게시 후 해결 여부) 갱신."""
+    import outcome_tracker
+    try:
+        out = outcome_tracker.refresh()
+        _RECO_STATE.clear()
+        return {"ok": True, **out}
+    except Exception as e:
+        return {"ok": False, "error": str(e)[:200]}
+
+
+@app.get("/knowledge/outcomes")
+def knowledge_outcomes():
+    """효능 집계 — resolved_after_rca/pending 비율 + 효능율."""
+    import outcome_tracker
+    return outcome_tracker.report()
+
+
+# ---------------------------------------------------------------------------
 # 자기 개선 loop — L1 측정·진단·제안 (무변경)
 # ---------------------------------------------------------------------------
 # ---------------------------------------------------------------------------
