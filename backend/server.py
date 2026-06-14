@@ -519,6 +519,14 @@ def _explain_prompt_md(query_rec: dict, match_recs: list[dict]) -> str:
                        + blocks + "\n")
     except Exception:
         pass
+    # 부정지식(P2-7): 질의·근거 사례에서 이미 기각된 가설을 주입 → 재안 방지
+    negatives = ""
+    try:
+        import negative_knowledge
+        keys = [k for k in [query_rec.get("key")] if k] + [r.get("key") for r in match_recs]
+        negatives = negative_knowledge.prompt_block(keys)
+    except Exception:
+        pass
     return (
         "당신은 LSI 칩/펌웨어 불량 분석 시니어 엔지니어입니다. 제공된 '과거 해결 사례'만 근거로 "
         "아래 미해결 이슈를 깊이 있게 분석하세요. 다음 섹션을 순서대로 **모두 빠짐없이** 한국어 마크다운으로 작성합니다:\n"
@@ -532,7 +540,7 @@ def _explain_prompt_md(query_rec: dict, match_recs: list[dict]) -> str:
         "각 핵심 주장 옆에 근거 사례 키를 (LSI-49)처럼 인라인 인용하세요(제공된 키만, 창작 금지). 한자/CJK 한자 금지.\n\n"
         f"## 미해결 이슈\n{q.get('summary','')}\n증상: {q.get('symptom','')}\n"
         f"칩: {q.get('chip','')} / 분류: {q.get('category','')}{q_extra}\n\n"
-        f"## 과거 해결 사례\n{cases}\n{fewshot}")
+        f"## 과거 해결 사례\n{cases}\n{fewshot}{negatives}")
 
 
 def _llm_stream(prompt: str, reasoning: bool = False):
@@ -1038,6 +1046,34 @@ def knowledge_ontology_categories(req: CategoriesBody):
     import ontology
     out = ontology.set_categories(req.categories)
     return {"ok": True, **out, "stats": ontology.stats()}
+
+
+# ---------------------------------------------------------------------------
+# 부정지식(기각된 가설) (P2-7)
+# ---------------------------------------------------------------------------
+class NegativeBody(BaseModel):
+    key: str
+    hypothesis: str
+    reason: str = ""
+
+
+@app.post("/knowledge/negative")
+def knowledge_negative(req: NegativeBody):
+    """기각된 가설 기록 — 심층 분석 시 재안 방지에 활용."""
+    import negative_knowledge
+    try:
+        out = negative_knowledge.add(req.key, req.hypothesis, req.reason,
+                                     author=os.getenv("JIRA_EMAIL", ""))
+        return {"ok": True, **out, "stats": negative_knowledge.stats()}
+    except ValueError as e:
+        return {"ok": False, "error": str(e)}
+
+
+@app.get("/knowledge/negative")
+def knowledge_negative_get(key: str):
+    """특정 이슈의 기각된 가설 목록."""
+    import negative_knowledge
+    return {"key": key, "rejected": negative_knowledge.get(key), "stats": negative_knowledge.stats()}
 
 
 @app.post("/reco/reload")
