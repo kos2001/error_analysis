@@ -1072,6 +1072,27 @@ def knowledge_contradictions(sim_hi: float = 0.85, rc_lo: float = 0.60):
 
 
 # ---------------------------------------------------------------------------
+# 평가셋 빌더 (자기개선 #0 — 평가 기질)
+# ---------------------------------------------------------------------------
+@app.post("/eval/build")
+def eval_build():
+    """실신호 평가셋(real: outcome+feedback) + 변별 hard셋(증상만) 재빌드."""
+    import eval_builder
+    st = _reco_state()
+    base = [r for r in st["records"] if not r.get("curated")]
+    return {"real": eval_builder.real_pairs(st["by_key"]), "hard": eval_builder.hard_set(base)}
+
+
+@app.post("/eval/paraphrase/generate")
+def eval_paraphrase_generate(per_template: int = 1, max_templates: int = 10):
+    """LLM 재서술로 변별 평가셋 확장(토큰 비용 — max_templates로 제한). 누적 저장."""
+    import eval_builder
+    st = _reco_state()
+    base = [r for r in st["records"] if not r.get("curated")]
+    return eval_builder.generate_paraphrases(base, per_template=per_template, max_templates=max_templates)
+
+
+# ---------------------------------------------------------------------------
 # 자기 개선 loop — L1 측정·진단·제안 (무변경)
 # ---------------------------------------------------------------------------
 # ---------------------------------------------------------------------------
