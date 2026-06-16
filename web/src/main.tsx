@@ -4,13 +4,14 @@ import './index.css'
 import FailureAnalysis from './FailureAnalysis.tsx'
 import Onboarding from './Onboarding.tsx'
 import RcaQueue from './RcaQueue.tsx'
+import VocPage from './VocPage.tsx'
 
 const API = (import.meta as any).env?.VITE_API ?? "http://127.0.0.1:8001";
 
 function Root() {
   const [status, setStatus] = useState<any | undefined>(undefined); // undefined = 로딩
   const [forceCfg, setForceCfg] = useState(false);                  // 설정 다시 열기
-  const [view, setView] = useState<"app" | "rca">("app");
+  const [view, setView] = useState<"app" | "rca" | "voc">("app");
   const [pending, setPending] = useState(0);
   const load = () => fetch(`${API}/config/status`).then((r) => r.json())
     .then((s) => { setStatus(s); setForceCfg(false); })
@@ -38,6 +39,11 @@ function Root() {
               className={`px-2 py-0.5 rounded ${view === "rca" ? "bg-indigo-600 text-white" : "text-slate-300 hover:text-white"}`}>
               📤 승인 대기{pending > 0 ? ` ${pending}` : ""}
             </button>
+            <button onClick={() => setView(view === "voc" ? "app" : "voc")}
+              title="서비스 의견 (VOC)"
+              className={`px-2 py-0.5 rounded ${view === "voc" ? "bg-indigo-600 text-white" : "text-slate-300 hover:text-white"}`}>
+              💬 VOC
+            </button>
             <button onClick={() => setForceCfg(true)} title="설정 변경"
               className="text-slate-400 hover:text-white px-2">⚙️ 설정</button>
           </div>
@@ -50,6 +56,8 @@ function Root() {
           <Onboarding status={status} onDone={load} />
         ) : view === "rca" ? (
           <RcaQueue onBack={() => { setView("app"); loadPending(); }} onChange={loadPending} />
+        ) : view === "voc" ? (
+          <VocPage onBack={() => setView("app")} />
         ) : (
           <FailureAnalysis onQueueChange={loadPending} />
         )}

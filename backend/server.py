@@ -319,6 +319,51 @@ def reco_feedback_stats():
     return {"stats": reco_feedback.stats(), "eval_pairs": reco_feedback.eval_pairs()}
 
 
+# ---------------------------------------------------------------------------
+# VOC (Voice of Customer) — 서비스 자체에 대한 사용자 피드백
+# ---------------------------------------------------------------------------
+class VocBody(BaseModel):
+    category: str = "other"      # bug | improvement | praise | question | other
+    message: str
+    author: str = ""
+    context: str = ""            # 어느 화면/맥락에서 남겼는지(선택)
+
+
+@app.post("/voc")
+def voc_submit(req: VocBody):
+    """VOC 등록(버그·개선요청·칭찬·문의)."""
+    import voc_store
+    try:
+        return {"ok": True, "item": voc_store.add(req.category, req.message,
+                                                  author=req.author, context=req.context),
+                "stats": voc_store.stats()}
+    except ValueError as e:
+        return {"ok": False, "error": str(e)}
+
+
+@app.get("/voc")
+def voc_list(state: str = ""):
+    """VOC 목록 + 집계."""
+    import voc_store
+    return {"items": voc_store.items(state), "stats": voc_store.stats()}
+
+
+class VocStateBody(BaseModel):
+    id: str
+    state: str                   # open | triaged | resolved | wont_fix
+
+
+@app.post("/voc/state")
+def voc_set_state(req: VocStateBody):
+    """VOC 상태 변경(분류/해결/보류)."""
+    import voc_store
+    try:
+        it = voc_store.set_state(req.id, req.state)
+        return {"ok": bool(it), "item": it, "stats": voc_store.stats()}
+    except ValueError as e:
+        return {"ok": False, "error": str(e)}
+
+
 @app.get("/issues/unresolved")
 def unresolved_issues():
     st = _reco_state()
