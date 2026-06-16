@@ -25,13 +25,14 @@ def rerank(query: str, documents: list[str], model: str = DEFAULT_MODEL,
     """
     if not documents:
         return []
+    from llm_headers import custom_headers
     key = os.environ["OPENROUTER_API_KEY"]
     base = os.getenv("OPENROUTER_BASE_URL", "https://openrouter.ai/api/v1")
     payload: dict = {"model": model, "query": query, "documents": documents}
     if top_n is not None:
         payload["top_n"] = top_n
     r = requests.post(f"{base}/rerank",
-                      headers={"Authorization": f"Bearer {key}"},
+                      headers={"Authorization": f"Bearer {key}", **custom_headers()},
                       json=payload, timeout=timeout)
     r.raise_for_status()
     results = r.json().get("results", [])

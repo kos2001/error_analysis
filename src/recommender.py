@@ -116,12 +116,23 @@ class Recommender:
         self._keys = [r["key"] for r in self.kb]
         self._kb_verified = [bool(r.get("verified")) for r in self.kb]
         if self.method in ("embed", "hybrid_embed"):
-            self._init_embed()
-        elif self.signals:
-            # 게이트/신뢰도 표시에 코사인이 필요. fastembed 미설치 시 신호 없이 동작.
+            # 임베딩 백엔드(fastembed 미설치 / openrouter 게이트웨이 /embeddings 미지원·오류)
+            # 실패 시 BM25 경로로 우아하게 폴백한다. embed→bm25, hybrid_embed→hybrid.
             try:
                 self._init_embed()
-            except ImportError:
+            except Exception as e:
+                fallback = "bm25" if self.method == "embed" else "hybrid"
+                print(f"[recommender] 임베딩({self.embed_backend}/{self._model_name()}) "
+                      f"초기화 실패 → '{self.method}'→'{fallback}' 폴백: {str(e)[:120]}")
+                self.method = fallback
+                self.signals = False
+                self._embedder = None
+                self._kb_emb = None
+        elif self.signals:
+            # 게이트/신뢰도 표시에 코사인이 필요. 실패 시 신호 없이 동작.
+            try:
+                self._init_embed()
+            except Exception:
                 self.signals = False
 
     # ---------- 임베딩(선택, 교체 가능) ----------
@@ -148,13 +159,14 @@ class Recommender:
         """OpenRouter /embeddings 호출(배치). OPENROUTER_API_KEY 필요."""
         import os
         import requests
+        from llm_headers import custom_headers
         key = os.environ["OPENROUTER_API_KEY"]
         base = os.getenv("OPENROUTER_BASE_URL", "https://openrouter.ai/api/v1")
+        hdrs = {"Authorization": f"Bearer {key}", **custom_headers()}
         out: list[list[float]] = []
         for i in range(0, len(texts), 64):  # rate/payload 여유 배치
             chunk = texts[i:i + 64]
-            r = requests.post(f"{base}/embeddings",
-                              headers={"Authorization": f"Bearer {key}"},
+            r = requests.post(f"{base}/embeddings", headers=hdrs,
                               json={"model": self._model_name(), "input": chunk}, timeout=120)
             r.raise_for_status()
             data = sorted(r.json()["data"], key=lambda x: x["index"])
@@ -309,9 +321,10 @@ class Recommender:
         # coverage 게이트: 무관 질의 차단.
         coverage = bool(matches)
         gate = None
-        if self.rerank:
+        if self.rerank and rr_scores:
+            # rerank 게이트는 rerank가 실제 점수를 냈을 때만. /rerank 실패(rr_scores 빈
+            # dict)면 아래 embed_cos 게이트, 그것도 없으면 기본(매치 있으면 통과)로 폴백.
             # 강도 기반 게이트 — rerank relevance_score(재보정 임계 rerank_gate).
-            # RRF/코사인 게이트보다 분리력이 큼(측정: 정답 min 0.384 vs 무관 max 0.042).
             top_rr = max(rr_scores.values(), default=0.0)
             coverage = bool(matches) and top_rr >= self.rerank_gate
             gate = {"signal": "rerank", "rerank_top": round(top_rr, 3),

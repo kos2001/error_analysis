@@ -141,8 +141,10 @@ def generate_paraphrases(records: list[dict], *, per_template: int = 1,
             f"요약: {rep.get('summary','')}\n증상: {rep.get('symptom','')}")
         body = _json.dumps({"model": model, "max_tokens": 500, "response_format": {"type": "json_object"},
                             "messages": [{"role": "user", "content": prompt}]}).encode()
+        from llm_headers import custom_headers
         req = urllib.request.Request(f"{base}/chat/completions", data=body,
-                                     headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"})
+                                     headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json",
+                                              **custom_headers()})
         try:
             d = _json.load(urllib.request.urlopen(req, timeout=60))
             txt = d["choices"][0]["message"]["content"]
