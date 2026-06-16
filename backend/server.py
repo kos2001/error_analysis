@@ -17,7 +17,7 @@ from typing import Optional
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT / "src"))
 
-from fastapi import FastAPI
+from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
@@ -26,6 +26,7 @@ from lang_validator import validate_and_fix  # noqa: E402
 from preprocess import parse_issue  # noqa: E402
 from recommender import Recommender, template_key  # noqa: E402
 import app_config  # noqa: E402
+from json_store import read_json, write_json_atomic  # noqa: E402
 from llm_headers import custom_headers  # noqa: E402  사내 게이트웨이 x-service-id/x-user-id
 
 # stdlib(반복되던 지연 import 일원화)
@@ -199,6 +200,60 @@ def config_test_llm(body: ConfigBody):
         return {"ok": True, "models": n}
     except Exception as e:
         return {"ok": False, "error": str(e)[:200]}
+
+
+# ---------------------------------------------------------------------------
+# Jira 웹훅 — 새 이슈/변경/삭제 시 KB(all_raw_issues.json) 증분 갱신 + 캐시 무효화
+# ---------------------------------------------------------------------------
+def _upsert_raw_issue(issue: dict) -> int:
+    """단건 raw 이슈를 ALL_RAW에 upsert(키 기준 교체/추가). 반환: 총 이슈 수."""
+    data = read_json(ALL_RAW, [])
+    if not isinstance(data, list):
+        data = []
+    out = [r for r in data if r.get("key") != issue.get("key")]
+    out.append(issue)
+    write_json_atomic(ALL_RAW, out)
+    return len(out)
+
+
+def _delete_raw_issue(key: str) -> int:
+    """ALL_RAW에서 해당 키 이슈 제거. 반환: 총 이슈 수."""
+    data = read_json(ALL_RAW, [])
+    if not isinstance(data, list):
+        return 0
+    out = [r for r in data if r.get("key") != key]
+    write_json_atomic(ALL_RAW, out)
+    return len(out)
+
+
+@app.post("/webhook/jira")
+def jira_webhook(body: dict, secret: str = ""):
+    """Jira 웹훅 수신 — 이슈 생성/변경/삭제 시 해당 이슈만 재적재(증분) 후 KB 캐시 무효화.
+
+    Jira 웹훅 URL에 ?secret=... 를 넣고 JIRA_WEBHOOK_SECRET 와 일치해야 처리(설정 시).
+    payload의 issue.key만 신뢰하고 api/2로 직접 재조회(KB 포맷 일관성). 빠르게 200 반환.
+    """
+    expected = os.getenv("JIRA_WEBHOOK_SECRET", "")
+    if expected and secret != expected:
+        raise HTTPException(status_code=401, detail="invalid webhook secret")
+    event = (body.get("webhookEvent") or "").lower()
+    issue = body.get("issue") or {}
+    key = issue.get("key", "")
+    proj = os.getenv("JIRA_PROJECT_KEY", "LSI")
+    if not key or not key.startswith(proj + "-"):
+        return {"ok": True, "skipped": "no/other-project key", "key": key, "event": event}
+    try:
+        if "issue_deleted" in event:
+            n = _delete_raw_issue(key)
+            action = "deleted"
+        else:                                   # created/updated/comment 등 → 재조회 upsert
+            from ingest import fetch_issue
+            n = _upsert_raw_issue(fetch_issue(key))
+            action = "upserted"
+        _RECO_STATE.clear()                     # 다음 요청 시 갱신된 KB로 재빌드
+        return {"ok": True, "action": action, "key": key, "event": event, "kb_total": n}
+    except Exception as e:
+        return {"ok": False, "error": str(e)[:200], "key": key, "event": event}
 
 
 # ---------------------------------------------------------------------------

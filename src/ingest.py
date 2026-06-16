@@ -65,6 +65,34 @@ def _all_keys(s: requests.Session, base: str, project: str) -> list[tuple[str, s
     return out
 
 
+def _issue_raw(s, base: str, key: str) -> dict:
+    """단건 이슈를 api/2 상세 + 댓글로 raw 레코드(KB 포맷)로 변환."""
+    rf = s.get(f"{base}/rest/api/2/issue/{key}",
+               params={"fields": "summary,description,labels,priority,components,status,created"},
+               timeout=30)
+    rf.raise_for_status()
+    f = rf.json()["fields"]
+    rc = s.get(f"{base}/rest/api/2/issue/{key}/comment", timeout=30)
+    rc.raise_for_status()
+    return {
+        "key": key,
+        "summary": f.get("summary", ""),
+        "description": f.get("description") or "",
+        "labels": f.get("labels", []),
+        "priority": (f.get("priority") or {}).get("name", ""),
+        "components": [c["name"] for c in (f.get("components") or [])],
+        "status": f["status"]["name"],
+        "created": f.get("created", ""),
+        "comments": [c["body"] for c in rc.json().get("comments", [])],
+    }
+
+
+def fetch_issue(key: str) -> dict:
+    """단건 이슈 raw 레코드 — 웹훅 등 증분 갱신용."""
+    s, base = jira_session()
+    return _issue_raw(s, base, key)
+
+
 def fetch_issues(status: str | None = DEFAULT_STATUS) -> list[dict]:
     """status=None 또는 'all' 이면 전체. api/2 상세로 plain-text 본문/코멘트 취득."""
     s, base = jira_session()
@@ -72,28 +100,7 @@ def fetch_issues(status: str | None = DEFAULT_STATUS) -> list[dict]:
     pairs = _all_keys(s, base, project)
     if status and status.lower() != "all":
         pairs = [(k, st) for k, st in pairs if st == status]
-
-    issues: list[dict] = []
-    for key, _st in pairs:
-        rf = s.get(f"{base}/rest/api/2/issue/{key}",
-                   params={"fields": "summary,description,labels,priority,components,status,created"},
-                   timeout=30)
-        rf.raise_for_status()
-        f = rf.json()["fields"]
-        rc = s.get(f"{base}/rest/api/2/issue/{key}/comment", timeout=30)
-        rc.raise_for_status()
-        issues.append({
-            "key": key,
-            "summary": f.get("summary", ""),
-            "description": f.get("description") or "",
-            "labels": f.get("labels", []),
-            "priority": (f.get("priority") or {}).get("name", ""),
-            "components": [c["name"] for c in (f.get("components") or [])],
-            "status": f["status"]["name"],
-            "created": f.get("created", ""),
-            "comments": [c["body"] for c in rc.json().get("comments", [])],
-        })
-    return issues
+    return [_issue_raw(s, base, key) for key, _st in pairs]
 
 
 def save(issues: list[dict], path: Path = RAW_JSON) -> None:
