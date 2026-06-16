@@ -26,6 +26,7 @@ from lang_validator import validate_and_fix  # noqa: E402
 from preprocess import parse_issue  # noqa: E402
 from recommender import Recommender, template_key  # noqa: E402
 import app_config  # noqa: E402
+from llm_headers import custom_headers  # noqa: E402  사내 게이트웨이 x-service-id/x-user-id
 
 # stdlib(반복되던 지연 import 일원화)
 import datetime as _dt  # noqa: E402
@@ -109,6 +110,10 @@ def _reco_state() -> dict:
             method=os.getenv("RVP_RECO_METHOD", "hybrid_embed"),
             rerank=os.getenv("RVP_RERANK", "0") == "1",
             rerank_model=os.getenv("RVP_RERANK_MODEL", "cohere/rerank-v3.5"),
+            # 임베딩 백엔드/모델(사내 게이트웨이 시 openrouter+bge-m3). 미설정 시 로컬 MiniLM.
+            embed_backend=os.getenv("RVP_EMBED_BACKEND", "fastembed"),
+            embed_model=(os.getenv("RVP_EMBED_MODEL", "")
+                         or ("baai/bge-m3" if os.getenv("RVP_EMBED_BACKEND", "") == "openrouter" else "")),
             # L2 검증된 파라미터 override(미설정 시 클래스 기본값 — 현행과 동일).
             **{kw: float(os.environ[env]) for kw, env in
                (("gate_cos", "RVP_GATE_COS"), ("boost", "RVP_BOOST")) if os.getenv(env)},
@@ -188,7 +193,7 @@ def config_test_llm(body: ConfigBody):
     if not key:
         return {"ok": False, "error": "API key 가 필요합니다."}
     try:
-        r = requests.get(f"{base}/models", headers={"Authorization": f"Bearer {key}"}, timeout=15)
+        r = requests.get(f"{base}/models", headers={"Authorization": f"Bearer {key}", **custom_headers()}, timeout=15)
         r.raise_for_status()
         n = len(r.json().get("data", []))
         return {"ok": True, "models": n}
@@ -372,7 +377,8 @@ def _agno_explain(prompt: str) -> "RcaExplanation | None":
     model_id = os.getenv("RVP_MODEL") or os.getenv("OPENROUTER_MODEL", "openai/gpt-4o-mini")
     base = os.getenv("OPENROUTER_BASE_URL", "https://openrouter.ai/api/v1")
     agent = Agent(
-        model=OpenRouter(id=model_id, api_key=api_key, base_url=base),
+        model=OpenRouter(id=model_id, api_key=api_key, base_url=base,
+                         default_headers=custom_headers() or None),
         output_schema=RcaExplanation,
         use_json_mode=True,  # 모델 무관 호환(네이티브 structured 미지원 모델 대비)
         instructions=[
@@ -501,7 +507,8 @@ def _llm_stream(prompt: str, reasoning: bool = False):
     req = urllib.request.Request(
         base.rstrip("/") + "/chat/completions",
         data=json.dumps(payload).encode("utf-8"),
-        headers={"Authorization": "Bearer " + api_key, "Content-Type": "application/json"})
+        headers={"Authorization": "Bearer " + api_key, "Content-Type": "application/json",
+                 **custom_headers()})
     with urllib.request.urlopen(req, timeout=180) as resp:
         for raw in resp:
             line = raw.decode("utf-8").strip()
@@ -1287,7 +1294,8 @@ def _judge_rca(ctx: str, body: str) -> "JudgeScore | None":
         jm = os.getenv("RVP_JUDGE_MODEL") or os.getenv("RVP_MODEL") or os.getenv("OPENROUTER_MODEL", "openai/gpt-4o-mini")
         base = os.getenv("OPENROUTER_BASE_URL", "https://openrouter.ai/api/v1")
         agent = Agent(
-            model=OpenRouter(id=jm, api_key=api_key, base_url=base),
+            model=OpenRouter(id=jm, api_key=api_key, base_url=base,
+                             default_headers=custom_headers() or None),
             output_schema=JudgeScore, use_json_mode=True, markdown=False, telemetry=False,
             instructions=["LSI 불량 분석 RCA 채점관. 제공된 근거 사례에 비추어 평가한다.",
                           "기준: 근거 충실도(날조·환각 감점), 인용 정합, 권장 해결 단계의 구체성·실행가능성, 한자 금지 준수.",
