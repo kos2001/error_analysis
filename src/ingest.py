@@ -66,14 +66,22 @@ def _all_keys(s: requests.Session, base: str, project: str) -> list[tuple[str, s
 
 
 def _issue_raw(s, base: str, key: str) -> dict:
-    """단건 이슈를 api/2 상세 + 댓글로 raw 레코드(KB 포맷)로 변환."""
+    """단건 이슈를 api/2 상세(댓글 포함)로 raw 레코드(KB 포맷)로 변환.
+
+    댓글을 fields=comment 로 상세 응답에 포함시켜 이슈당 요청 2회→1회.
+    comment 필드가 페이지네이션으로 잘린 경우에만 전용 엔드포인트로 보충.
+    """
     rf = s.get(f"{base}/rest/api/2/issue/{key}",
-               params={"fields": "summary,description,labels,priority,components,status,created"},
+               params={"fields": "summary,description,labels,priority,components,status,created,comment"},
                timeout=30)
     rf.raise_for_status()
     f = rf.json()["fields"]
-    rc = s.get(f"{base}/rest/api/2/issue/{key}/comment", timeout=30)
-    rc.raise_for_status()
+    cfield = f.get("comment") or {}
+    comments = [c["body"] for c in cfield.get("comments", [])]
+    if cfield.get("total", 0) > len(comments):
+        rc = s.get(f"{base}/rest/api/2/issue/{key}/comment", timeout=30)
+        rc.raise_for_status()
+        comments = [c["body"] for c in rc.json().get("comments", [])]
     return {
         "key": key,
         "summary": f.get("summary", ""),
@@ -83,7 +91,7 @@ def _issue_raw(s, base: str, key: str) -> dict:
         "components": [c["name"] for c in (f.get("components") or [])],
         "status": f["status"]["name"],
         "created": f.get("created", ""),
-        "comments": [c["body"] for c in rc.json().get("comments", [])],
+        "comments": comments,
     }
 
 
@@ -93,14 +101,20 @@ def fetch_issue(key: str) -> dict:
     return _issue_raw(s, base, key)
 
 
-def fetch_issues(status: str | None = DEFAULT_STATUS) -> list[dict]:
-    """status=None 또는 'all' 이면 전체. api/2 상세로 plain-text 본문/코멘트 취득."""
+def fetch_issues(status: str | None = DEFAULT_STATUS, workers: int = 8) -> list[dict]:
+    """status=None 또는 'all' 이면 전체. api/2 상세로 plain-text 본문/코멘트 취득.
+
+    상세 조회는 이슈별 독립이라 스레드 병렬(기본 8). 순서는 key 순 유지.
+    (urllib3 커넥션 풀은 스레드 안전 — Session 공유 GET은 문제없음.)
+    """
     s, base = jira_session()
     project = os.getenv("JIRA_PROJECT_KEY", "LSI")
     pairs = _all_keys(s, base, project)
     if status and status.lower() != "all":
         pairs = [(k, st) for k, st in pairs if st == status]
-    return [_issue_raw(s, base, key) for key, _st in pairs]
+    from concurrent.futures import ThreadPoolExecutor
+    with ThreadPoolExecutor(max_workers=max(1, workers)) as ex:
+        return list(ex.map(lambda kv: _issue_raw(s, base, kv[0]), pairs))
 
 
 def save(issues: list[dict], path: Path = RAW_JSON) -> None:

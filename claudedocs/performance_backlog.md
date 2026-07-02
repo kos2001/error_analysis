@@ -1,6 +1,8 @@
 # 성능 개선 백로그 — 추천 품질 · 응답 속도 · 운영
 
 > 2026-06-10 코드 분석 기준. 우선순위: P1(품질에 직접 영향) > P2(체감 속도) > P3(운영).
+> 2026-07-02 일괄 갱신: 재순위 기본 활성(paraphrase P@1 .898→1.0), 평가셋 4종 하네스,
+> ingest 병렬화(39s→3.2s), 질의 임베딩 중복 제거(10ms→6ms). 상세는 각 항목 상태 참조.
 
 ## A. 추천 품질 (정확도)
 
@@ -10,19 +12,22 @@
    → RRF 점수 또는 BM25 원점수에 임계값을 두고, 미달 시 "유사 사례 없음 — 시니어 검토" 경로로 보낸다.
    (RCA 댓글 자동화의 coverage 게이트와 동일 로직 공유)
 
-2. **[P1] P@1=1.0은 합성 데이터 착시 — 실전형 평가셋 필요**
-   현재 평가(LOO)는 같은 템플릿 20종의 표현 변형이라 BM25만으로 만점.
-   → ① 요약을 paraphrase한 hold-out 세트 ② 템플릿 자체를 빼고 평가(unseen failure class)
-   ③ 신규 실이슈 유입 시 평가셋 자동 갱신. `eval_recommender.py` 확장.
+2. **[완료 2026-07-02] 실전형 평가셋 — 4종 운용**
+   `eval_recommender.py --sets hard,generated,real` + `--paraphrase`.
+   paraphrase(사람 49) · generated(LLM 재서술 24) · hard(증상만 64) · real(실신호, 성장형).
+   hard/LOO는 현 KB에서 포화(P@1 1.0) — 변별은 paraphrase/generated가 담당.
 
-3. **[P2] 표현이 다른 동일 고장(paraphrase)에 BM25 취약 → 임베딩 랭커 기본화 검토**
-   `hybrid_embed`(fastembed 다국어 MiniLM)가 이미 구현돼 있으나 기본은 미사용.
-   → 2번의 paraphrase 평가셋에서 `hybrid` vs `hybrid_embed` 비교 후 승자 채택.
-   채택 시 KB 임베딩을 `tmp_db/`에 사전 계산·캐시(서버 기동 시 재계산 방지).
+3. **[완료] 임베딩 랭커 기본화 + 재순위 기본 활성 (2026-07-02)**
+   `hybrid_embed`가 서버 기본. KB 임베딩 `tmp_db/kb_emb_*.npz` 캐시.
+   재순위(cohere/rerank-v3.5)도 기본 활성으로 승격 — 재검증: paraphrase P@1 .898→**1.0**,
+   generated .958→**1.0**, 게이트 통과/무관 차단 모두 1.0. 평균 0.38s/질의.
+   안전장치: 타임아웃 10s + 연속 3회 실패 시 자동 비활성(circuit breaker) → 미지원
+   게이트웨이에서 질의당 0.01s로 1차 순위+embed_cos 게이트 폴백(실측). RVP_RERANK=0 으로 옵트아웃.
 
-4. **[P2] 한국어 토크나이저가 단순 정규식** (`[A-Za-z0-9가-힣]+`)
-   조사가 붙은 단어("전원차단을"≠"전원차단")가 다른 토큰이 된다.
-   → kiwipiepy 등 형태소 분석 도입 또는 음절 bi-gram 보조 인덱스. 2번 평가셋으로 효과 측정 후 결정.
+4. **[보류 — 측정 결과 무효] 한국어 형태소/토크나이저 고도화**
+   paraphrase 실패 5건을 분석(2026-07-02): 조사 문제가 아니라 완전 재서술(어휘 갭)
+   — "추운 곳에서 기기를 켜면" vs "저온 부팅 시 UFS link startup 실패". 형태소로 해결 불가,
+   재순위(3번)가 해소. RRF 가중치 그리드(6조합)도 현행 2.0/1.5/0.5가 최적으로 확인.
 
 5. **[P1] LLM 설명의 인용 검증 게이트 부재 (UI `explain` 경로)**
    생성문이 매치에 없는 이슈 키를 인용(환각)해도 그대로 표시된다.
@@ -34,8 +39,12 @@
 
 ## B. 응답 속도 (latency)
 
-7. **[P2] `/chat`이 요청마다 `build_agent()` 재생성** — agno Agent + SqliteDb + MemoryManager를
-   매 요청 새로 만든다. → `(user_id, session_id)` 키 LRU 캐시.
+7. ~~[P2] `/chat`이 요청마다 `build_agent()` 재생성~~ — **무효(2026-07-02)**: 서버에
+   `/chat` 엔드포인트 없음(agent.py는 데모 CLI). 해당 시 재검토.
+
+7b. **[완료 2026-07-02] 질의 임베딩 중복 계산 제거** — `recommend()`가 rank()와
+    신호 산출에서 같은 질의를 두 번 임베딩. 직전 질의 캐시로 제거 → 질의당 10ms→6ms
+    (로컬 fastembed), openrouter 임베딩 백엔드는 질의당 API 1회 절감. 품질 불변.
 
 8. **[완료] LLM 종합 분석(explain) SSE 스트리밍** — OpenRouter `stream:true` 직접 호출
    (`_llm_stream`)로 토큰 단위 중계 구현됨. 매치 즉시 + 설명 스트리밍.
@@ -43,17 +52,17 @@
 9. ~~[P3] hermes 프로세스 기동 오버헤드~~ — **무효**: 엔진을 agno(OpenRouter HTTP)
    단일로 결정해 hermes CLI/proxy 미사용.
 
-10. **[P3] GraphRetriever 중복 로드** — agent.py 등에서 개별 로드 시 단일 모듈 레벨
-    싱글톤으로 공유(해당 시).
+10. **[해소 확인 2026-07-02] GraphRetriever 중복 로드** — agent.py가 모듈 레벨
+    `_GRAPH` 싱글톤을 이미 사용. 나머지 사용처는 오프라인 스크립트.
 
 ## C. 운영 (데이터 신선도·인입 속도)
 
-11. **[P2] ingest가 이슈당 GET 2회 직렬** (상세 + 댓글, 200건 ≈ 400 요청).
-    → `fields=...,comment`로 댓글을 상세 응답에 포함시켜 요청 절반,
-    `ThreadPoolExecutor(8)`로 병렬화. 200건 기준 수 분 → 수십 초.
+11. **[완료 2026-07-02] ingest 요청 절반 + 병렬화** — `fields=...,comment`로 이슈당
+    요청 2회→1회(잘림 시에만 보충), `ThreadPoolExecutor(8)`.
+    실측: 완료 137건 직렬 19.5s(구방식 ≈39s) → **3.2s**, 전체 264건 5.4s.
 
-12. **[P3] KB가 수동 갱신** (`data/all_raw_issues.json` 스냅숏).
-    → 주기 ingest(cron) + `_reco_state` 무효화 엔드포인트(`POST /reco/reload`).
+12. **[부분 완료] KB 갱신** — Jira 웹훅 증분 재적재(커밋 e101ceb) + 병렬 ingest로
+    전체 재적재도 수 초. 주기 cron은 self_improve에서 일일 수행.
 
 ## 권장 착수 순서
 
