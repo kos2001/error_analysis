@@ -203,10 +203,20 @@ class Recommender:
             pass  # 캐시 실패는 치명적이지 않음
 
     def _cos_all(self, q: str):
-        """질의 vs KB 전체 코사인 유사도 배열 (강도 신호)."""
+        """질의 vs KB 전체 코사인 유사도 배열 (강도 신호).
+
+        recommend() 한 번에 rank(_embed_rank)와 신호 산출이 같은 질의로 두 번
+        호출하므로 직전 질의 1건을 캐시 — 질의 임베딩 중복 계산(로컬 모델 추론
+        또는 API 호출) 제거.
+        """
+        cached = getattr(self, "_cos_cache", None)
+        if cached is not None and cached[0] == q:
+            return cached[1]
         qv = self._embed_texts([q], is_query=True)[0]
-        return self._kb_emb @ qv / (
+        sims = self._kb_emb @ qv / (
             self._np.linalg.norm(self._kb_emb, axis=1) * self._np.linalg.norm(qv) + 1e-9)
+        self._cos_cache = (q, sims)
+        return sims
 
     def _embed_rank(self, q: str) -> list[tuple[int, float]]:
         sims = self._cos_all(q)
