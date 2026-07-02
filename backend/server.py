@@ -103,13 +103,15 @@ def _reco_state() -> dict:
         "by_key": {r["key"]: r for r in records},
         "resolved": resolved,
         "unresolved": unresolved,
-        # hybrid_embed + 단계 인지 문서(제기+분석). RVP_RERANK=1 → 2차 cross-encoder
-        # 재순위 + rerank 강도 게이트(측정: paraphrase P@1 .898→1.0, 무관 완전 분리).
+        # hybrid_embed + 단계 인지 문서(제기+분석) + 2차 cross-encoder 재순위 기본 활성.
+        # 재순위 효과(재검증 2026-07-02): paraphrase P@1 .898→1.0, 게이트 .939→1.0,
+        # 무관 차단 .95→1.0. 실패 시 1차 순위 폴백 + 연속 실패 시 자동 비활성(circuit
+        # breaker)이라 /rerank 미지원 게이트웨이에서도 무중단. RVP_RERANK=0 으로 끈다.
         # (A/B: tmp_db/ab_reranker.json, claudedocs/similarity_search_plan.md)
         "reco": Recommender(
             resolved,
             method=os.getenv("RVP_RECO_METHOD", "hybrid_embed"),
-            rerank=os.getenv("RVP_RERANK", "0") == "1",
+            rerank=os.getenv("RVP_RERANK", "1") == "1",
             rerank_model=os.getenv("RVP_RERANK_MODEL", "cohere/rerank-v3.5"),
             # 임베딩 백엔드/모델(사내 게이트웨이 시 openrouter+bge-m3). 미설정 시 로컬 MiniLM.
             embed_backend=os.getenv("RVP_EMBED_BACKEND", "fastembed"),

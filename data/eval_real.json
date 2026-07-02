@@ -1,1 +1,13 @@
-{"_doc":"실신호 누적 평가셋(outcome+feedback). /eval/build로 생성.","positives":[],"negatives":[]}
+{
+  "_doc": "실신호 누적 평가셋(outcome+feedback). 시간이 갈수록 성장.",
+  "positives": [
+    {
+      "id": "real-LSI-120",
+      "template": "가변주사율(VRR) 전환 시 화면 깜빡임(flicker)",
+      "summary": "[DDI-OLED-T7] 가변주사율(VRR) 전환 시 화면 깜빡임(flicker) (Anchor Mobile / eDP bridge)",
+      "symptom": "120Hz↔1Hz 가변주사율(LTPO) 전환 시 특정 회색조 패턴에서 눈에 띄는 brightness flicker가 발생합니다.",
+      "source": "outcome_resolved"
+    }
+  ],
+  "negatives": []
+}

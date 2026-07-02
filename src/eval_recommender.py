@@ -114,6 +114,9 @@ def main() -> int:
     ap.add_argument("--refresh", action="store_true")
     ap.add_argument("--paraphrase", action="store_true",
                     help="data/eval_paraphrase.json 평가(검색+게이트) 포함")
+    ap.add_argument("--sets", default="",
+                    help="추가 평가셋(쉼표구분): hard,generated,real — "
+                         "data/eval_<name>.json (evaluate_paraphrase 포맷)")
     ap.add_argument("--doc-stages", default="report+analysis",
                     choices=["report", "report+analysis", "both"],
                     help="KB 문서 표현 단계 A/B (both=두 변형 모두 평가)")
@@ -134,6 +137,16 @@ def main() -> int:
     para_ds = None
     if args.paraphrase:
         para_ds = json.load((ROOT / "data" / "eval_paraphrase.json").open())
+
+    # 추가 평가셋(hard/generated/real …) — evaluate_paraphrase 포맷 공유
+    extra_sets: dict[str, dict] = {}
+    for name in (s.strip() for s in args.sets.split(",") if s.strip()):
+        p = ROOT / "data" / f"eval_{name}.json"
+        ds = json.load(p.open()) if p.exists() else {}
+        if ds.get("positives"):
+            extra_sets[name] = ds
+        else:
+            print(f"[eval] eval_{name}.json 비어있음/없음 — 건너뜀")
 
     methods = [m.strip() for m in args.methods.split(",") if m.strip()]
     stages = ["report", "report+analysis"] if args.doc_stages == "both" else [args.doc_stages]
@@ -158,6 +171,10 @@ def main() -> int:
                 pp = evaluate_paraphrase(rec, para_ds)
                 results[tag]["paraphrase"] = pp
                 print(f"{'':<14}{'':<10}{'paraphrase':<12}{pp['n_pos']:>4}{pp['P@1']:>7}{pp['P@3']:>7}{pp['MRR']:>7}{pp['gate_pass']:>7}{pp['junk_blocked']:>7}")
+            for name, ds in extra_sets.items():
+                ep = evaluate_paraphrase(rec, ds)
+                results[tag][name] = ep
+                print(f"{'':<14}{'':<10}{name:<12}{ep['n_pos']:>4}{ep['P@1']:>7}{ep['P@3']:>7}{ep['MRR']:>7}{ep['gate_pass']:>7}{ep['junk_blocked']:>7}")
     # 결과 저장
     (ROOT / "tmp_db" / "eval_recommender.json").write_text(
         json.dumps(results, ensure_ascii=False, indent=2), encoding="utf-8")

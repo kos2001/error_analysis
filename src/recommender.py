@@ -106,6 +106,11 @@ class Recommender:
     rerank_gate: float = 0.20             # coverage 게이트 임계(rerank relevance_score).
     # 0.20 근거: 측정(scripts/ab_reranker.py, 2026-06-13) — 정답 최상위 점수 최소 0.384,
     # 무관 질의 최상위 최대 0.042. 둘 사이 양쪽 마진(≈0.16/0.18) 확보하는 값.
+    rerank_timeout: int = 10              # /rerank 호출 타임아웃(초). 실측 호출당 ≈0.6s —
+    # 게이트웨이가 /rerank 미지원일 때 질의가 기본 60s에 묶이지 않게 짧게 제한.
+    rerank_fail_limit: int = 3            # 연속 실패 시 rerank 자동 비활성(circuit breaker) —
+    # 미지원 게이트웨이에서 질의마다 실패 요청을 반복 지불하지 않기 위함.
+    _rerank_fails: int = field(default=0, repr=False)
     _embedder: object = field(default=None, repr=False)
     _kb_emb: object = field(default=None, repr=False)
 
@@ -284,13 +289,20 @@ class Recommender:
             cand = [i for i, _ in ranked_all[:self.rerank_top_n]]
             docs = [_doc_text(self.kb[i], analysis=self.doc_analysis) for i in cand]
             try:
-                order = _rerank(qtext, docs, model=self.rerank_model)
+                order = _rerank(qtext, docs, model=self.rerank_model,
+                                timeout=self.rerank_timeout)
                 rr_scores = {cand[idx]: sc for idx, sc in order}
                 reranked = [(cand[idx], sc) for idx, sc in order]
                 tail = [(i, s) for i, s in ranked_all if i not in rr_scores]
                 ranked_all = reranked + tail
-            except Exception:
-                pass  # rerank 실패 시 1차 순위로 폴백(파이프라인 무중단)
+                self._rerank_fails = 0
+            except Exception as e:
+                # rerank 실패 시 1차 순위로 폴백(파이프라인 무중단).
+                self._rerank_fails += 1
+                if self._rerank_fails >= self.rerank_fail_limit:
+                    self.rerank = False
+                    print(f"[recommender] rerank {self._rerank_fails}회 연속 실패 → "
+                          f"비활성(1차 순위+embed_cos 게이트로 폴백): {str(e)[:120]}")
         ranked = ranked_all[:k]
         q_ents = query_entities(query_rec)
         # 강도 신호 — RRF(순위 기반) 점수와 별개. 게이트/신뢰도 표시는 이것만 사용한다.
