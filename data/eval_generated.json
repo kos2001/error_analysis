@@ -1,1 +1,299 @@
-{"_doc":"LLM 재서술 평가셋. /eval/paraphrase/generate로 생성.","positives":[],"negatives":[]}
+{
+  "_doc": "LLM 재서술 평가셋(의미보존·표현상이). 정답=원 템플릿. 누적 성장.",
+  "positives": [
+    {
+      "id": "gen-LSI-6",
+      "template": "고온 지속 쓰기 중 NVMe 컨트롤러 timeout 후 link down",
+      "summary": "NVMe 컨트롤러가 높은 온도에서 긴 시간 쓰기 작업을 수행하다 타임아웃이 발생하고 링크가 끊깁니다.",
+      "symptom": "순차 쓰기를 30분 이상 지속하면 드라이브가 사라지고, 호스트에서 수정 가능한 오류 메시지가 대량으로 발생한 후 링크 속도가 1세대로 감소합니다.",
+      "source": "llm_paraphrase",
+      "origin_key": "LSI-6"
+    },
+    {
+      "id": "gen-LSI-8",
+      "template": "Deterministic TRIM 이후 읽기 데이터가 0이 아닌 garbage 반환",
+      "summary": "TRIM 명령 후 읽기 시 0이 아닌 쓰레기 값이 반환되는 문제",
+      "symptom": "RZAT(Read Zero After Trim)이 지원된다고 명시되었지만, 실제로 할당 해제 후 동일 LBA를 읽을 때 이전 데이터가 약 0.01% 확률로 반환되는 현상이 발생합니다.",
+      "source": "llm_paraphrase",
+      "origin_key": "LSI-8"
+    },
+    {
+      "id": "gen-LSI-11",
+      "template": "특정 조도에서 horizontal banding(가로 줄무늬) noise",
+      "summary": "특정 밝기 조건에서 가로 방향의 줄무늬 노이즈가 발생하는 문제",
+      "symptom": "PWM 디밍 방식의 실내 LED 조명 아래에서 카메라 미리보기에 가로 줄무늬가 나타납니다. 야외나 자연광 환경에서는 정상입니다.",
+      "source": "llm_paraphrase",
+      "origin_key": "LSI-11"
+    },
+    {
+      "id": "gen-LSI-12",
+      "template": "HDR 모드에서 움직이는 피사체에 motion artifact(ghosting)",
+      "summary": "고속 HDR 합성 중 빠른 움직임 피사체에서 잔상 문제",
+      "symptom": "시간차 HDR 이미지 합성 과정에서 빠르게 이동하는 물체의 가장자리에 잔상이나 겹쳐 보이는 현상이 나타납니다.",
+      "source": "llm_paraphrase",
+      "origin_key": "LSI-12"
+    },
+    {
+      "id": "gen-LSI-17",
+      "template": "부하 급변(load transient) 시 코어 레일 undershoot로 AP reset",
+      "summary": "PMIC에서 부하가 갑자기 변하는 상황에서 코어 전압이 기준치 아래로 떨어져 AP가 리셋됨",
+      "symptom": "CPU가 유휴 상태에서 최대 부하로 급격히 전환될 때 코어 전압이 일시적으로 떨어져 간헐적으로 AP가 리셋됩니다.",
+      "source": "llm_paraphrase",
+      "origin_key": "LSI-17"
+    },
+    {
+      "id": "gen-LSI-18",
+      "template": "I2C/SPMI 버스 통신 중 간헐적 NACK로 레일 설정 누락",
+      "summary": "전원관리IC(PMIC)와의 I2C/SPMI 구간에서 가끔 NACK 응답이 발생해 전원 레일 설정이 제대로 반영되지 않는 문제",
+      "symptom": "기기가 켜질 때 간헐적으로 PMIC가 SPMI 명령에 NACK을 보내면서 일부 전원 레일이 초기값으로 유지되어 주변 회로가 정상 작동하지 않음",
+      "source": "llm_paraphrase",
+      "origin_key": "LSI-18"
+    },
+    {
+      "id": "gen-LSI-19",
+      "template": "특정 양자화 모델에서 추론 결과 비결정성(non-deterministic) 발생",
+      "summary": "일부 양자화된 모델에서 추론 결과가 매번 일정하지 않은 문제가 확인됨",
+      "symptom": "동일한 입력과 동일한 모델을 사용해도 NPU 연산 결과가 실행 시마다 미세하게 차이가 나서 정확도 회귀 검증이 통과되지 않음",
+      "source": "llm_paraphrase",
+      "origin_key": "LSI-19"
+    },
+    {
+      "id": "gen-LSI-21",
+      "template": "최고속(8533Mbps) 동작 시 특정 온도에서 비트 에러 상승",
+      "summary": "[고속 메모리 인터페이스] 최대 속도(8533Mbps)에서 특정 온도 대역에서 비트 오류 증가 현상",
+      "symptom": "LPDDR5X를 8533Mbps로 구동 시, 대략 70°C 근방에서 읽기 데이터 라인에 간헐적인 비트 오류가 나타나며, ECC 정정 가능 오류 횟수가 증가합니다.",
+      "source": "llm_paraphrase",
+      "origin_key": "LSI-21"
+    },
+    {
+      "id": "gen-LSI-22",
+      "template": "self-refresh 진입/탈출 시 드문 training 실패로 hang",
+      "summary": "저전력 대기모드 전환 과정에서 간헐적인 동기화 오류로 시스템이 정지하는 현상",
+      "symptom": "절전 모드를 자주 들락날락하는 작업 환경에서 아주 드물게 복귀 훈련이 실패해 메모리 읽기/쓰기가 중단됨",
+      "source": "llm_paraphrase",
+      "origin_key": "LSI-22"
+    },
+    {
+      "id": "gen-LSI-23",
+      "template": "CAN-FD 고부하 버스트에서 간헐적 프레임 손실",
+      "summary": "차량용 MCU 특정 버전에서 CAN-FD 고부하 시 드물게 데이터 유실",
+      "symptom": "CAN-FD 트래픽이 순간적으로 80% 이상으로 치솟는 구간에서 간헐적으로 수신 프레임이 빠지면서 ADAS 센서 값이 오래된 상태로 남는 현상",
+      "source": "llm_paraphrase",
+      "origin_key": "LSI-23"
+    },
+    {
+      "id": "gen-LSI-24",
+      "template": "ASIL-D lockstep 코어 간 transient 불일치로 false safety trap",
+      "summary": "ASIL-D 등급 lockstep 코어 간 일시적 불일치로 인한 가짜 안전 트랩",
+      "symptom": "고온 또는 고부하 환경에서 드물게 lockstep 코어 비교기가 불일치를 감지해 안전 트랩이 발생하며, 기능이 안전 상태로 전환됩니다.",
+      "source": "llm_paraphrase",
+      "origin_key": "LSI-24"
+    },
+    {
+      "id": "gen-LSI-47",
+      "template": "전압 glitch 환경에서 보안 부팅 측정값(attestation) 불일치",
+      "summary": "전압 변동 구간에서 보안 부팅 인증 값이 일치하지 않는 문제가 특정 고객사의 NFC 제어 장치에서 관찰됨",
+      "symptom": "전원 잡음이 강한 조건에서 간헐적으로 시큐어 부팅 측정 해시 값이 달라져, 원격 인증이 정상적으로 이루어지지 않음",
+      "source": "llm_paraphrase",
+      "origin_key": "LSI-47"
+    },
+    {
+      "id": "gen-LSI-49",
+      "template": "비정상 전원차단 반복 후 일부 LBA에서 UNC(uncorrectable) 에러",
+      "summary": "특정 NVMe 저장장치에서 예기치 않은 전원 차단이 반복되자 일부 논리 블록에서 복구 불가능한 읽기 오류가 발생했습니다.",
+      "symptom": "전원 차단 시뮬레이션을 수천 회 수행한 뒤, 일정 영역의 데이터를 읽을 때 오류가 나타나며 장치 자가 진단 항목 중 매체 오류 횟수가 올라갑니다.",
+      "source": "llm_paraphrase",
+      "origin_key": "LSI-49"
+    },
+    {
+      "id": "gen-LSI-73",
+      "template": "고부하 카메라 버스트 촬영 중 UFS write latency spike(>500ms)",
+      "summary": "[UFS4 컨트롤러] 고부하 카메라 연사 중 UFS 쓰기 지연 급증(500ms 이상) (카메라 모듈 업체/모바일 AP)",
+      "symptom": "짧은 시간에 많은 데이터를 쓰는 연사 촬영 상황에서 간헐적으로 쓰기 지연 시간이 500ms를 넘어가며 프레임 누락이 생깁니다.",
+      "source": "llm_paraphrase",
+      "origin_key": "LSI-73"
+    },
+    {
+      "id": "gen-LSI-79",
+      "template": "폴더블 패널 접힘부 경계에서 색온도 불일치(color mura)",
+      "summary": "폴더블 패널의 접히는 영역 경계선에서 색온도 차이가 발생하는 불량(컬러 무라) 현상",
+      "symptom": "패널을 완전히 펼쳤을 때 힌지 부분을 기준으로 좌우 영역의 색온도가 미세하게 다르게 관찰됩니다.",
+      "source": "llm_paraphrase",
+      "origin_key": "LSI-79"
+    },
+    {
+      "id": "gen-LSI-88",
+      "template": "NFC 동시 동작 중 eSE APDU 응답 timeout",
+      "summary": "NFC 동시 사용 시 eSE APDU 응답 지연 문제",
+      "symptom": "카드 에뮬레이션과 eSE 접근이 동시에 발생하는 결제 상황에서 드물게 APDU 응답이 시간 초과되어 거래가 실패합니다.",
+      "source": "llm_paraphrase",
+      "origin_key": "LSI-88"
+    },
+    {
+      "id": "gen-LSI-207",
+      "template": "다중 태그 환경에서 Type A anticollision 실패로 태그 인식 불가",
+      "summary": "주변 다중 태그 상황에서 Type A 충돌 방지 처리 오류로 태그 미인식",
+      "symptom": "두 장의 NFC-A 태그가 겹쳐 있을 경우 모두 인식되지 않습니다. 한 장만 있을 때는 정상 작동하며, 디지털 프로토콜 v2.4의 단일 장치 탐지 과정에 결함이 있는 것으로 추정됩니다.",
+      "source": "llm_paraphrase",
+      "origin_key": "LSI-207"
+    },
+    {
+      "id": "gen-LSI-208",
+      "template": "ISO-DEP WTX 처리 누락으로 보안 APDU 교환 timeout",
+      "summary": "ISO-DEP WTX 처리 생략으로 보안 APDU 교환 시간 초과 발생",
+      "symptom": "보안 애플릿(예: 키 생성)의 긴 처리 시간이 필요한 APDU에서 카드가 WTX 요청을 전송했으나 리더가 이를 무시하여 시간 초과가 발생합니다. Type 4 Tag v1.2 및 ISO-DEP 경로 사용 시 발생합니다.",
+      "source": "llm_paraphrase",
+      "origin_key": "LSI-208"
+    },
+    {
+      "id": "gen-LSI-210",
+      "template": "LLCP 링크 유휴 시 SYMM 미송신으로 P2P 세션 조기 종료",
+      "summary": "NFC 컨트롤러 칩에서 연결 유지용 프레임이 전송되지 않아 대기 중인 P2P 연결이 끊어짐",
+      "symptom": "P2P 모드(LLCP v1.4)로 연결한 뒤 데이터 교환이 없으면 1초도 안 되어 링크가 해제됩니다. 예를 들어 SNEP으로 큰 파일을 받기 위해 대기하는 도중에 문제가 발생합니다.",
+      "source": "llm_paraphrase",
+      "origin_key": "LSI-210"
+    },
+    {
+      "id": "gen-LSI-217",
+      "template": "Type 5 Tag(NFC-V) 원거리에서 read 실패 — load modulation 진폭 미달",
+      "summary": "특정 NFC 제어칩에서 장거리 태그 인식 불가 — 변조 신호 세기 부족으로 추정, 데이터센터 환경의 리눅스 호스트에서 재현됨",
+      "symptom": "ISO 15693 방식 태그를 약 2cm 이상 떨어뜨리면 읽기 실패가 30% 이상 발생합니다. 동일 거리에서 타사 리더는 정상 동작합니다. 아날로그 수신 회로의 감도 문제가 의심됩니다.",
+      "source": "llm_paraphrase",
+      "origin_key": "LSI-217"
+    },
+    {
+      "id": "gen-LSI-221",
+      "template": "Connection Handover로 BT 페어링 시 OOB 데이터 불완전 전달",
+      "summary": "블루투스 페어링을 위한 NFC 기반 Connection Handover 과정에서 OOB 데이터가 불완전하게 전달되는 문제",
+      "symptom": "NFC 태그를 터치하여 블루투스 스피커와 페어링(Connection Handover v1.5, Bluetooth SSP v1.3)을 시도할 때, 특정 단말기에서는 페어링 화면만 표시되고 실제 연결은 성공하지 않습니다.",
+      "source": "llm_paraphrase",
+      "origin_key": "LSI-221"
+    },
+    {
+      "id": "gen-LSI-249",
+      "template": "Smart Poster RTD 파싱 오류 — 다중 레코드 NDEF에서 URI 누락",
+      "summary": "RFID 제어 칩 N3 시리즈에서 Smart Poster RTD 해석 오류 - 복합 NDEF 메시지에서 웹 주소 손실",
+      "symptom": "URI와 텍스트 RTD가 함께 포함된 Smart Poster 태그를 인식하면 제목만 보이고 링크 동작이 안 됩니다. 반면 URI 단일 레코드만 있는 태그는 정상 작동합니다.",
+      "source": "llm_paraphrase",
+      "origin_key": "LSI-249"
+    },
+    {
+      "id": "gen-LSI-250",
+      "template": "저전력 폴링(LPCD) 오탐으로 대기 전류 3배 증가",
+      "summary": "NFC 제어기의 저전력 감지 기능 오작동으로 대기 전류가 설계 대비 3배 증가",
+      "symptom": "주머니나 금속 재질 케이스 환경에서 저전력 카드 감지가 분당 수십 회씩 잘못 활성화되어, 전체 폴링 과정이 반복적으로 구동됩니다. 이로 인해 대기 상태 소비 전류가 정상 사양의 3배 수준으로 높아졌습니다.",
+      "source": "llm_paraphrase",
+      "origin_key": "LSI-250"
+    },
+    {
+      "id": "gen-LSI-251",
+      "template": "NFC Authentication Protocol 보안 채널 수립 실패 — nonce 재사용 거부",
+      "summary": "NFC 제어 칩에서 정품 인증용 보안 연결 생성이 안 되는 문제 — 임시 키 값 재사용 차단",
+      "symptom": "1.0 버전 인증 규격을 쓰는 정품 태그와 연결할 때, 첫 번째 시도는 항상 성공하지만 두 번째 시도부터는 인증이 실패하며 보안 채널이 맺어지지 않음",
+      "source": "llm_paraphrase",
+      "origin_key": "LSI-251"
+    }
+  ],
+  "negatives": [
+    {
+      "id": "n01",
+      "summary": "사무실 프린터에서 용지 걸림이 반복됩니다",
+      "symptom": "인쇄 중 종이가 구겨져 멈춤"
+    },
+    {
+      "id": "n02",
+      "summary": "점심 메뉴 추천해 주세요",
+      "symptom": ""
+    },
+    {
+      "id": "n03",
+      "summary": "Wi-Fi 공유기 비밀번호를 잊어버렸습니다",
+      "symptom": "관리자 페이지 접속 불가"
+    },
+    {
+      "id": "n04",
+      "summary": "회의실 예약 시스템이 느립니다",
+      "symptom": "캘린더 로딩이 오래 걸림"
+    },
+    {
+      "id": "n05",
+      "summary": "신규 입사자 노트북 지급 요청",
+      "symptom": ""
+    },
+    {
+      "id": "n06",
+      "summary": "사내 VPN 접속이 안 됩니다",
+      "symptom": "로그인 후 인증 단계에서 실패"
+    },
+    {
+      "id": "n07",
+      "summary": "이메일에 스팸이 너무 많이 옵니다",
+      "symptom": "하루 수십 통의 광고 메일 수신"
+    },
+    {
+      "id": "n08",
+      "summary": "지하 주차장 정기권 등록 방법 문의",
+      "symptom": ""
+    },
+    {
+      "id": "n09",
+      "summary": "사무실 에어컨이 너무 춥습니다",
+      "symptom": "온도 조절이 안 됨"
+    },
+    {
+      "id": "n10",
+      "summary": "급여 명세서 항목이 이해가 안 됩니다",
+      "symptom": ""
+    },
+    {
+      "id": "n11",
+      "summary": "연차 휴가 신청 절차를 알려주세요",
+      "symptom": ""
+    },
+    {
+      "id": "n12",
+      "summary": "사내 카페 운영시간이 어떻게 되나요",
+      "symptom": ""
+    },
+    {
+      "id": "n13",
+      "summary": "택배가 분실된 것 같습니다",
+      "symptom": "배송 완료로 표시되는데 물건이 없음"
+    },
+    {
+      "id": "n14",
+      "summary": "출입카드가 인식되지 않습니다",
+      "symptom": "게이트에서 카드를 대도 반응 없음"
+    },
+    {
+      "id": "n15",
+      "summary": "회의실 프로젝터 화면이 안 나옵니다",
+      "symptom": "케이블 연결 후에도 신호 없음 표시"
+    },
+    {
+      "id": "n16",
+      "summary": "사무실 의자 바퀴가 빠졌습니다",
+      "symptom": ""
+    },
+    {
+      "id": "n17",
+      "summary": "명함 인쇄에 오타가 있습니다",
+      "symptom": "부서명이 잘못 표기됨"
+    },
+    {
+      "id": "n18",
+      "summary": "연말정산 서류 제출 기한 문의",
+      "symptom": ""
+    },
+    {
+      "id": "n19",
+      "summary": "팀 회식 장소 추천 부탁드립니다",
+      "symptom": ""
+    },
+    {
+      "id": "n20",
+      "summary": "사내 메신저 알림이 늦게 옵니다",
+      "symptom": "메시지 수신이 몇 분씩 지연됨"
+    }
+  ]
+}
