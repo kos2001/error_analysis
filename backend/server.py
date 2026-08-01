@@ -11,6 +11,8 @@ from __future__ import annotations
 import json
 import os
 import sys
+import threading
+from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Optional
 
@@ -53,7 +55,14 @@ app_config.load_into_env()
 
 # LLM 설명 생성 엔진: agno(OpenRouter HTTP) 단일.
 
-app = FastAPI(title="LSI Failure Analysis API")
+@asynccontextmanager
+async def _lifespan(_app: FastAPI):
+    _start_jira_poller()          # 정의는 아래 Jira 동기화 절 — 호출 시점에 해석된다
+    yield
+    _stop_jira_poller()
+
+
+app = FastAPI(title="LSI Failure Analysis API", lifespan=_lifespan)
 
 # ---------------------------------------------------------------------------
 # 추천 엔진 (과거 해결 이슈 → 미해결 이슈의 root-cause/해결책 제안)
@@ -62,12 +71,36 @@ ALL_RAW = ROOT / "data" / "all_raw_issues.json"
 RESOLVED_STATUS = "완료"
 
 _RECO_STATE: dict = {}
+# 빌드 락 — 백그라운드 Jira 폴러가 무효화하고 요청 스레드가 재빌드하므로 경합이 잦다.
+# 락이 없으면 (a) 동시 요청이 각자 전체 재빌드(수 초)를 중복 수행하고,
+# (b) `if _RECO_STATE` 통과 직후 무효화가 끼어들면 빈 dict가 반환된다.
+_RECO_LOCK = threading.Lock()
+
+
+def _invalidate_reco() -> None:
+    """KB 캐시 무효화 — 다음 _reco_state()에서 재빌드.
+
+    dict를 제자리에서 비우지 않고 새 dict로 교체한다. 읽는 쪽은 항상 '완전한 예전
+    상태' 아니면 '빈 상태'만 보게 되어, 반쯤 지워진 dict를 잡는 경우가 없다.
+    """
+    global _RECO_STATE
+    _RECO_STATE = {}
 
 
 def _reco_state() -> dict:
     """all_raw_issues.json 로드 → 레코드 파싱 → recommender(해결 KB) 1회 빌드(캐시)."""
-    if _RECO_STATE:
-        return _RECO_STATE
+    global _RECO_STATE
+    st = _RECO_STATE           # 지역 참조로 고정 — 이후 무효화에 영향받지 않는다
+    if st:
+        return st
+    with _RECO_LOCK:
+        if _RECO_STATE:        # 락 대기 중 다른 스레드가 빌드를 마쳤다
+            return _RECO_STATE
+        return _build_reco_state()
+
+
+def _build_reco_state() -> dict:
+    global _RECO_STATE
     if not ALL_RAW.exists():
         raise RuntimeError(
             "data/all_raw_issues.json 없음 — 먼저 실행: "
@@ -98,7 +131,7 @@ def _reco_state() -> dict:
             records = records + curated
     except Exception:
         pass
-    _RECO_STATE.update({
+    new_state = {
         "records": records,
         "by_key": {r["key"]: r for r in records},
         "resolved": resolved,
@@ -121,8 +154,9 @@ def _reco_state() -> dict:
             **{kw: float(os.environ[env]) for kw, env in
                (("gate_cos", "RVP_GATE_COS"), ("boost", "RVP_BOOST")) if os.getenv(env)},
         ),
-    })
-    return _RECO_STATE
+    }
+    _RECO_STATE = new_state
+    return new_state
 
 app.add_middleware(
     CORSMiddleware,
@@ -153,7 +187,7 @@ def config_status():
 @app.post("/config")
 def config_save(body: ConfigBody):
     st = app_config.save(body.jira, body.llm)
-    _RECO_STATE.clear()  # Jira 변경 반영 위해 KB 캐시 무효화
+    _invalidate_reco()  # Jira 변경 반영 위해 KB 캐시 무효화
     return st
 
 
@@ -252,10 +286,88 @@ def jira_webhook(body: dict, secret: str = ""):
             from ingest import fetch_issue
             n = _upsert_raw_issue(fetch_issue(key))
             action = "upserted"
-        _RECO_STATE.clear()                     # 다음 요청 시 갱신된 KB로 재빌드
+        _invalidate_reco()                     # 다음 요청 시 갱신된 KB로 재빌드
         return {"ok": True, "action": action, "key": key, "event": event, "kb_total": n}
     except Exception as e:
         return {"ok": False, "error": str(e)[:200], "key": key, "event": event}
+
+
+# ---------------------------------------------------------------------------
+# Jira 폴링 동기화 — 웹훅과 같은 결과를 공개 URL 없이 얻는 경로.
+# Jira Cloud가 로컬 서버에 도달할 수 없는 환경에서 기본 갱신 수단으로 쓴다.
+# 웹훅을 등록해 두면 둘 다 동작해도 무해하다(같은 upsert를 중복 수행할 뿐).
+# ---------------------------------------------------------------------------
+_JIRA_POLL: dict = {"thread": None, "stop": None, "last": None, "error": None,
+                    "started_at": None, "polls": 0, "invalidations": 0}
+
+
+def _jira_poll_loop(interval: int, stop: threading.Event) -> None:
+    import jira_sync
+    while not stop.wait(interval):            # 첫 폴도 interval 후 — 기동을 막지 않는다
+        try:
+            r = jira_sync.sync()
+            _JIRA_POLL["last"] = r
+            _JIRA_POLL["error"] = None
+            _JIRA_POLL["polls"] += 1
+            # 변경이 있을 때만 무효화 — 무효화는 전체 재빌드(임베딩 캐시 미스 시 수 초)를
+            # 부르므로 빈 폴에서 지불하면 순손해다.
+            if r.get("changed"):
+                _invalidate_reco()
+                _JIRA_POLL["invalidations"] += 1
+                print(f"[jira_poll] KB 갱신 {r} → 추천 캐시 무효화")
+        except Exception as e:
+            _JIRA_POLL["error"] = str(e)[:200]
+            print(f"[jira_poll] 실패(다음 주기에 재시도): {str(e)[:160]}")
+
+
+def _start_jira_poller() -> None:
+    """RVP_JIRA_POLL_SEC 주기로 백그라운드 폴링 시작. 0 이면 비활성."""
+    interval = int(os.getenv("RVP_JIRA_POLL_SEC", "30") or 0)
+    if interval <= 0 or not os.getenv("JIRA_BASE_URL"):
+        print("[jira_poll] 비활성 (RVP_JIRA_POLL_SEC=0 또는 JIRA_BASE_URL 없음)")
+        return
+    stop = threading.Event()
+    t = threading.Thread(target=_jira_poll_loop, args=(interval, stop),
+                         name="jira-poll", daemon=True)
+    _JIRA_POLL.update({"thread": t, "stop": stop,
+                       "started_at": _dt.datetime.now().isoformat(timespec="seconds")})
+    t.start()
+    print(f"[jira_poll] {interval}초 주기 폴링 시작")
+
+
+def _stop_jira_poller() -> None:
+    stop = _JIRA_POLL.get("stop")
+    if stop:
+        stop.set()
+
+
+@app.get("/jira/sync/status")
+def jira_sync_status():
+    """폴러 상태 + 마지막 동기화 결과."""
+    import jira_sync
+    return {
+        "poll_interval_sec": int(os.getenv("RVP_JIRA_POLL_SEC", "30") or 0),
+        "running": bool(_JIRA_POLL["thread"] and _JIRA_POLL["thread"].is_alive()),
+        "started_at": _JIRA_POLL["started_at"],
+        "polls": _JIRA_POLL["polls"],
+        "invalidations": _JIRA_POLL["invalidations"],
+        "last": _JIRA_POLL["last"],
+        "error": _JIRA_POLL["error"],
+        "state": jira_sync.load_state(),
+    }
+
+
+@app.post("/jira/sync")
+def jira_sync_now(full: bool = False, reconcile: bool = False):
+    """수동 동기화 — 폴 주기를 기다리지 않고 즉시 반영."""
+    import jira_sync
+    try:
+        r = jira_sync.sync(full=full, reconcile=reconcile)
+    except Exception as e:
+        raise HTTPException(status_code=502, detail=f"Jira 동기화 실패: {str(e)[:200]}")
+    if r.get("changed"):
+        _invalidate_reco()
+    return {"ok": True, **r}
 
 
 # ---------------------------------------------------------------------------
@@ -965,7 +1077,7 @@ def rca_approve(req: ApproveBody):
                 author=os.getenv("JIRA_EMAIL", ""), approved_at=now)
         except Exception:
             pass
-        _RECO_STATE.clear()  # KB 환류 반영 — 다음 요청 시 큐레이션 항목 포함해 재빌드
+        _invalidate_reco()  # KB 환류 반영 — 다음 요청 시 큐레이션 항목 포함해 재빌드
         return {"ok": True, "item": updated, "edited": original.strip() != final.strip(),
                 "counts": rca_queue.counts(), "feedback": rca_feedback.stats(),
                 "persisted": bool(persisted), "knowledge": knowledge_store.stats()}
@@ -1072,7 +1184,7 @@ def knowledge_lifecycle(req: LifecycleBody):
     try:
         info = lifecycle.set_state(req.key, req.state,
                                    superseded_by=req.superseded_by, reason=req.reason)
-        _RECO_STATE.clear()
+        _invalidate_reco()
         return {"ok": True, "lifecycle": info, "stats": lifecycle.stats()}
     except ValueError as e:
         return {"ok": False, "error": str(e)}
@@ -1110,7 +1222,7 @@ def knowledge_ontology_synonym(req: SynonymBody):
     """동의어 그룹 추가/확장(alias→canonical). 다음 재빌드부터 엔티티 통합."""
     try:
         out = ontology.add_synonym(req.canonical, req.aliases)
-        _RECO_STATE.clear()  # 정규화 반영을 위해 KB 재빌드
+        _invalidate_reco()  # 정규화 반영을 위해 KB 재빌드
         return {"ok": True, "group": out, "stats": ontology.stats()}
     except ValueError as e:
         return {"ok": False, "error": str(e)}
@@ -1171,7 +1283,7 @@ def knowledge_outcomes_refresh():
     import outcome_tracker
     try:
         out = outcome_tracker.refresh()
-        _RECO_STATE.clear()
+        _invalidate_reco()
         return {"ok": True, **out}
     except Exception as e:
         return {"ok": False, "error": str(e)[:200]}
@@ -1300,7 +1412,7 @@ def selfcheck_apply_param(req: ParamEvalBody):
         return {"ok": False, "applied": False, "verdict": verdict,
                 "error": "무회귀 게이트 미통과 — 적용 거부"}
     app_config.set_env(env_key, str(req.value))
-    _RECO_STATE.clear()  # 검증된 값 반영
+    _invalidate_reco()  # 검증된 값 반영
     return {"ok": True, "applied": True, "param": req.param, "value": req.value,
             "env": env_key, "verdict": verdict}
 
@@ -1312,7 +1424,7 @@ def selfcheck_reset_param(param: str):
     if not env_key:
         return {"ok": False, "error": f"튜닝 가능 파라미터 아님: {param}"}
     app_config.set_env(env_key, "")
-    _RECO_STATE.clear()
+    _invalidate_reco()
     return {"ok": True, "reset": param, "env": env_key}
 
 
@@ -1353,7 +1465,7 @@ def improve_queue_state(req: SuggestStateBody):
 @app.post("/reco/reload")
 def reco_reload():
     """추천 KB 캐시 무효화 — 새 큐레이션 지식을 서버 재시작 없이 즉시 반영."""
-    _RECO_STATE.clear()
+    _invalidate_reco()
     st = _reco_state()
     return {"ok": True, "kb_size": len(st["resolved"]), "by_key": len(st["by_key"])}
 
@@ -1366,7 +1478,7 @@ def knowledge_rebuild_from_jira():
     """
     try:
         out = knowledge_store.rebuild_from_jira(BOT_MARKER)
-        _RECO_STATE.clear()  # 복원된 지식 즉시 반영
+        _invalidate_reco()  # 복원된 지식 즉시 반영
         return {"ok": True, **out}
     except Exception as e:
         return {"ok": False, "error": str(e)[:200]}

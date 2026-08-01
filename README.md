@@ -65,11 +65,29 @@ bash scripts/dev.sh        # 백엔드(:8001) + 프론트(:5173)
 HTTP 직접 호출)** 단일 엔진으로 생성한다. 모델·엔드포인트는 `.env`의 `OPENROUTER_*`로 설정
 (`OPENROUTER_MODEL`/`OPENROUTER_BASE_URL`/`OPENROUTER_API_KEY`). 스트리밍은 SSE.
 
+### Jira 변경 반영 (KB 최신 유지)
+
+두 경로가 있고 **폴링이 기본**이다 — Jira Cloud가 로컬 서버에 도달할 수 없기 때문.
+
+- **폴링(기본)**: 서버가 `RVP_JIRA_POLL_SEC`(기본 30초) 주기로 "마지막 동기화 이후
+  변경된 이슈"를 물어 해당 이슈만 재적재하고, **변경이 있을 때만** 추천 캐시를
+  무효화한다(빈 폴은 재빌드 비용을 물지 않는다). 삭제는 `updated` JQL로 잡히지
+  않으므로 10회마다 전체 키를 대조해 제거한다.
+  `RVP_JIRA_POLL_SEC=0` 이면 끈다.
+  - `GET /jira/sync/status` — 폴러 상태·마지막 결과
+  - `POST /jira/sync[?full=true][&reconcile=true]` — 주기를 기다리지 않고 즉시 동기화
+  - CLI: `.venv/bin/python src/jira_sync.py [--full|--reconcile|--watch 30]`
+- **웹훅(선택)**: 서버가 공개 https URL로 노출된 경우 초 단위 반영.
+  수신부 `POST /webhook/jira`는 구현돼 있고, 등록은
+  `scripts/jira_webhook_register.py {list|register <공개URL>|delete <id>}`.
+  `JIRA_WEBHOOK_SECRET` 설정 시 쿼리로 대조한다. 폴링과 동시 사용해도 무해하다.
+
 ## 구조
 
 ```
 src/
   ingest.py             1) Jira 적재
+  jira_sync.py          Jira 폴링 증분 동기화 (변경분만 재적재 + 삭제 대조)
   preprocess.py         2) 전처리 + 엔티티/그래프 (엔티티 패턴 단일 소스)
   explorer.py           3) 탐색/검색/시각화
   recommender.py        해결책 추천기 (graph/bm25/hybrid/embed)
@@ -78,6 +96,7 @@ src/
   agent.py, retrievers.py, lang_validator.py, ...  (평가/실험용 유틸)
 scripts/
   run_pipeline.py       ingest→preprocess→explorer 오케스트레이션
+  jira_webhook_register.py  Jira 웹훅 등록/목록/해제 (공개 URL 필요, 폴링이 기본)
   jira_seed.py          가짜 고장 이슈 Jira 시드 생성기 (--set lsi|nfc|nfc2)
   lsi_failure_data.py   칩 11라인 × (LSI 24종 + NFC Forum 프로토콜 14종) 고장 시나리오
                         NFC 배치: NCI 2.3/Digital 2.4/LLCP 1.4/SNEP/Type 2·3·4·5 Tag/

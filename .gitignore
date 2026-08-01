@@ -30,3 +30,4 @@ data/jira_import.csv
 
 # self-improve 생성 리포트(재생성 가능)
 claudedocs/self_improve/
+data/jira_sync_state.json
