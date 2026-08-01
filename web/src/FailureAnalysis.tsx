@@ -24,7 +24,7 @@ type Gate = {
   rerank_top?: number; threshold?: number;
   max_cos?: number; cos_threshold?: number; top_entity_overlap?: number;
 };
-type RecoResp = { query: any; matches: Match[]; proposal: Proposal | null; coverage: boolean; gate?: Gate | null; explanation?: string; explanation_citations?: string[]; explanation_dropped_citations?: string[] };
+type RecoResp = { query: any; matches: Match[]; proposal: Proposal | null; coverage: boolean; gate?: Gate | null; explanation?: string; explanation_citations?: string[]; explanation_dropped_citations?: string[]; explanation_cached?: boolean };
 
 // 분류 칩 — 다크 배경에서 읽히도록 -950/60 배경 + -400 글자(하네스 배지 규칙).
 const CAT_COLOR: Record<string, string> = {
@@ -198,17 +198,18 @@ export default function FailureAnalysis({ onQueueChange, routeKey, onSelectKey, 
   };
 
   // LLM 종합 분석을 SSE로 스트리밍 — 본문은 토큰 단위, 인용은 완료 시 검증본 반영
-  const runExplain = (key: string) => {
+  const runExplain = (key: string, refresh = false) => {
     setExplaining(true);
-    setReco((prev) => (prev ? { ...prev, explanation: "", explanation_citations: [], explanation_dropped_citations: [] } : prev));
-    const es = new EventSource(`${API}/recommend/explain/stream?key=${encodeURIComponent(key)}&k=4`);
+    setReco((prev) => (prev ? { ...prev, explanation: "", explanation_citations: [], explanation_dropped_citations: [], explanation_cached: undefined } : prev));
+    const es = new EventSource(
+      `${API}/recommend/explain/stream?key=${encodeURIComponent(key)}&k=4${refresh ? "&refresh=true" : ""}`);
     const finish = () => { es.close(); setExplaining(false); };
     es.onmessage = (e) => {
       let d: any; try { d = JSON.parse(e.data); } catch { return; }
       if (d.type === "delta") {
         setReco((prev) => (prev ? { ...prev, explanation: (prev.explanation || "") + d.text } : prev));
       } else if (d.type === "done") {
-        setReco((prev) => (prev ? { ...prev, explanation_citations: d.citations || [] } : prev));
+        setReco((prev) => (prev ? { ...prev, explanation_citations: d.citations || [], explanation_cached: d.cached } : prev));
         finish();
       } else if (d.type === "error") {
         setReco((prev) => (prev ? { ...prev, explanation: (prev.explanation || "") + `\n\n_(생성 오류: ${d.message})_` } : prev));
@@ -219,6 +220,7 @@ export default function FailureAnalysis({ onQueueChange, routeKey, onSelectKey, 
   };
 
   const explain = () => { if (sel) runExplain(sel.key); };
+  const reExplain = () => { if (sel) runExplain(sel.key, true); };
 
   // RCA 댓글 초안 → HITL 승인 대기 큐에 추가 (Jira 게시는 승인 시에만)
   // 큐 진입 결과를 심각도(ok/info/warn)로 표준화 — '왜 안 들어갔는지'를 또렷이 표시
@@ -630,6 +632,26 @@ export default function FailureAnalysis({ onQueueChange, routeKey, onSelectKey, 
                     {/* LLM 설명 (agno 구조화 출력) */}
                     {reco.explanation && (
                       <section className="rounded-xl border border-zinc-800 bg-zinc-900/60 p-5">
+                        {!explaining && (
+                          <div className="mb-3 flex items-center gap-2">
+                            {reco.explanation_cached !== undefined && (
+                              <span title={reco.explanation_cached
+                                ? "이슈와 근거 사례가 그대로여서 저장된 분석을 재사용했습니다 (LLM 호출 없음)"
+                                : "이번에 새로 생성했습니다"}
+                                className={`inline-flex items-center whitespace-nowrap rounded-full border px-2.5 py-0.5 text-[11px] font-medium ${
+                                  reco.explanation_cached
+                                    ? "border-emerald-900/60 bg-emerald-950/60 text-emerald-400"
+                                    : "border-sky-900/60 bg-sky-950/60 text-sky-400"}`}>
+                                {reco.explanation_cached ? "저장된 분석 재사용" : "새로 생성됨"}
+                              </span>
+                            )}
+                            <button onClick={reExplain}
+                              title="캐시를 무시하고 지금 다시 생성합니다"
+                              className="ml-auto text-[11px] text-zinc-400 underline decoration-dotted underline-offset-2 hover:text-sky-400">
+                              다시 생성
+                            </button>
+                          </div>
+                        )}
                         <div className="prose prose-sm prose-invert max-w-none prose-headings:text-sky-300 prose-headings:my-2 prose-p:my-1">
                           <ReactMarkdown remarkPlugins={[remarkGfm]}>{reco.explanation}</ReactMarkdown>
                         </div>

@@ -85,6 +85,23 @@ HTTP 직접 호출)** 단일 엔진으로 생성한다. 모델·엔드포인트�
   `scripts/jira_webhook_register.py {list|register <공개URL>|delete <id>}`.
   `JIRA_WEBHOOK_SECRET` 설정 시 쿼리로 대조한다. 폴링과 동시 사용해도 무해하다.
 
+### AI 심층 분석 캐시 · 예열
+
+같은 이슈를 다시 열 때마다 LLM을 새로 돌리지 않는다.
+
+- **캐시 키는 내용 주소** — 질의 이슈 내용 + 근거 사례 내용 + 모델 + 프롬프트 버전.
+  무관한 이슈가 바뀌어도 캐시가 유지되고, 근거 사례의 근본원인이 수정되면 그 항목만
+  자연히 재생성된다. 저장 위치 `tmp_db/llm_cache/`(git 미추적).
+- **예열** — 서버 기동 3초 후와 Jira 변경 감지 후 백그라운드로 미해결 이슈의 분석을
+  미리 만들어 둔다. 이미 캐시에 있으면 건너뛴다.
+- 실측: 심층 분석 캐시 히트 시 첫 토큰 9.9초 → **0.01초**, `/recommend` 0.65초 → 0.00초.
+- 화면에 "저장된 분석 재사용" 배지와 "다시 생성"(캐시 무시) 버튼이 있다.
+- `GET /explain/cache` 현황 · `POST /explain/prewarm` 수동 예열 · `DELETE /explain/cache` 비우기.
+- 프롬프트 문구를 바꾸면 `src/llm_cache.py` 의 `PROMPT_VERSION` 을 올린다(안 올리면 옛 형식이 계속 나간다).
+
+환경변수: `RVP_PREWARM`(0=끔) · `RVP_PREWARM_LIMIT`(기본 20) ·
+`RVP_PREWARM_GAP_SEC`(기본 1.0) · `RVP_LLM_CACHE_TTL`(0=무기한)
+
 ## 구조
 
 ```

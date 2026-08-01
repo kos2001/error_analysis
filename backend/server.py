@@ -32,7 +32,9 @@ from json_store import read_json, write_json_atomic  # noqa: E402
 from llm_headers import custom_headers  # noqa: E402  사내 게이트웨이 x-service-id/x-user-id
 
 # stdlib(반복되던 지연 import 일원화)
+import copy  # noqa: E402
 import datetime as _dt  # noqa: E402
+import time  # noqa: E402
 import re  # noqa: E402
 # 지식자산/자기개선 스토어 모듈 — 지연 import를 최상위로 일원화(순환 참조 없음)
 import failure_modes  # noqa: E402
@@ -41,6 +43,7 @@ import knowledge_export  # noqa: E402
 import knowledge_gaps  # noqa: E402
 import knowledge_store  # noqa: E402
 import lifecycle  # noqa: E402
+import llm_cache  # noqa: E402
 import negative_knowledge  # noqa: E402
 import ontology  # noqa: E402
 import ownership  # noqa: E402
@@ -58,6 +61,9 @@ app_config.load_into_env()
 @asynccontextmanager
 async def _lifespan(_app: FastAPI):
     _start_jira_poller()          # 정의는 아래 Jira 동기화 절 — 호출 시점에 해석된다
+    # 심층 분석 예열을 기동 직후 백그라운드로 — 첫 사용자가 기다리지 않게 한다.
+    # 이미 캐시에 있는 건 건너뛰므로 재기동 비용은 거의 없다.
+    threading.Timer(3.0, _start_prewarm).start()
     yield
     _stop_jira_poller()
 
@@ -315,6 +321,8 @@ def _jira_poll_loop(interval: int, stop: threading.Event) -> None:
                 _invalidate_reco()
                 _JIRA_POLL["invalidations"] += 1
                 print(f"[jira_poll] KB 갱신 {r} → 추천 캐시 무효화")
+                # 바뀐 이슈만 키가 달라지므로, 예열을 다시 돌려도 나머지는 건너뛴다.
+                _start_prewarm()
         except Exception as e:
             _JIRA_POLL["error"] = str(e)[:200]
             print(f"[jira_poll] 실패(다음 주기에 재시도): {str(e)[:160]}")
@@ -629,11 +637,17 @@ def _llm_explain(query_rec: dict, matches: list[dict]) -> dict:
     agno output_schema 로 구조화 출력 → cited_keys 를 매치 키와 대조 검증해
     환각 인용을 제거(기존 정규식 인용 게이트를 구조적으로 대체).
     """
+    model = os.getenv("RVP_MODEL") or os.getenv("OPENROUTER_MODEL", "")
+    ckey = llm_cache.make_key("explain_struct", query_rec, matches, model)
+    hit = llm_cache.get(ckey)
+    if hit is not None:
+        return {**hit, "cached": True}
     prompt = _explain_prompt(query_rec, matches)
     valid_keys = {m["key"] for m in matches}
     try:
         exp = _agno_explain(prompt)
     except Exception as e:
+        # 실패는 캐시하지 않는다 — 일시적 오류를 영구히 되돌려주게 된다.
         return {"markdown": f"(LLM 설명 생성 실패: {e})", "citations": [], "dropped": []}
     if exp is None:
         return {"markdown": "", "citations": [], "dropped": []}
@@ -641,7 +655,10 @@ def _llm_explain(query_rec: dict, matches: list[dict]) -> dict:
     vr = validate_and_fix(md)  # CJK 안전망
     if not vr.ok and vr.rewritten:
         md = vr.rewritten
-    return {"markdown": md, "citations": cited, "dropped": dropped}
+    out = {"markdown": md, "citations": cited, "dropped": dropped}
+    llm_cache.put(ckey, out, meta={"query_key": query_rec.get("key", ""),
+                                   "evidence": [m.get("key", "") for m in matches]})
+    return {**out, "cached": False}
 
 
 def _case_block(r: dict) -> str:
@@ -746,42 +763,196 @@ def _llm_stream(prompt: str, reasoning: bool = False):
                 yield piece
 
 
+# 검색 결과 캐시 — 같은 질의에 임베딩·rerank API를 두 번 지불하지 않기 위함.
+# KB가 바뀌면 _RECO_STATE 가 통째로 교체되므로, 캐시도 그 상태 객체에 매달아 둔다
+# (상태가 새로 만들어지면 캐시도 자연히 비워진다). 크기는 작게 유지 — 목적은
+# "방금 본 이슈를 곧바로 다시 조회하는" 경로를 없애는 것이지 장기 보관이 아니다.
+_RECO_CACHE_MAX = 64
+
+
+def _recommend_cached(query_rec: dict, k: int, exclude_key: Optional[str]) -> dict:
+    st = _reco_state()
+    cache: dict = st.setdefault("_reco_cache", {})
+    ck = (query_rec.get("key") or "", k, exclude_key or "",
+          "" if query_rec.get("key") else llm_cache.issue_fingerprint(query_rec))
+    hit = cache.get(ck)
+    if hit is None:
+        hit = st["reco"].recommend(query_rec, k=k, exclude_key=exclude_key)
+        if len(cache) >= _RECO_CACHE_MAX:
+            cache.clear()                   # 단순 비우기 — LRU를 둘 만큼 크지 않다
+        cache[ck] = hit
+    # 사본을 준다 — 호출측이 matches 에 주석(known_issue·lifecycle 경고 등)을 덧붙이므로
+    # 캐시 원본을 그대로 넘기면 조회할 때마다 주석이 겹쳐 쌓인다.
+    return copy.deepcopy(hit)
+
+
+def _explain_md_cached(query_rec: dict, match_recs: list[dict]) -> dict | None:
+    """심층 분석(마크다운) 캐시 조회. 키는 질의·근거의 내용에서 나온다."""
+    model = os.getenv("RVP_MODEL") or os.getenv("OPENROUTER_MODEL", "")
+    key = llm_cache.make_key("explain_md", query_rec, match_recs, model,
+                             extra=os.getenv("RVP_EXPLAIN_REASONING", "0"))
+    return llm_cache.get(key)
+
+
+def _explain_md_store(query_rec: dict, match_recs: list[dict], value: dict) -> None:
+    model = os.getenv("RVP_MODEL") or os.getenv("OPENROUTER_MODEL", "")
+    key = llm_cache.make_key("explain_md", query_rec, match_recs, model,
+                             extra=os.getenv("RVP_EXPLAIN_REASONING", "0"))
+    llm_cache.put(key, value, meta={"query_key": query_rec.get("key", ""),
+                                    "evidence": [r.get("key", "") for r in match_recs]})
+
+
+def _generate_explain_md(query_rec: dict, match_recs: list[dict]):
+    """심층 분석을 생성하며 토큰을 흘려보낸다(제너레이터). 완료 시 캐시에 저장.
+
+    반환 제너레이터는 문자열 조각을 yield 하고, 끝나면 캐시에 완성본을 넣는다.
+    """
+    prompt = _explain_prompt_md(query_rec, match_recs)
+    reasoning = os.getenv("RVP_EXPLAIN_REASONING", "0") == "1"
+    valid = {r.get("key") for r in match_recs}
+    acc: list[str] = []
+    for delta in _llm_stream(prompt, reasoning=reasoning):
+        acc.append(delta)
+        yield delta
+    full = "".join(acc)
+    if full.strip():
+        cited = sorted({m for m in re.findall(r"LSI-\d+", full)} & valid)
+        _explain_md_store(query_rec, match_recs, {"markdown": full, "citations": cited})
+
+
 @app.get("/recommend/explain/stream")
 def explain_stream(key: Optional[str] = None, summary: str = "", symptom: str = "",
-                   chip: str = "", category: str = "", k: int = 4):
+                   chip: str = "", category: str = "", k: int = 4, refresh: bool = False):
     """LLM 종합 분석 SSE 스트리밍 — 본문은 토큰 단위로, 인용 검증은 완료 시.
 
-    이벤트: {type:delta,text} 반복 → {type:done,citations,dropped} | {type:error,message}.
+    이벤트: {type:delta,text} 반복 → {type:done,citations,cached} | {type:error,message}.
+
+    질의·근거가 그대로면 캐시본을 즉시 흘려보낸다(LLM 호출 0회). refresh=1 로 무시.
     """
     st = _reco_state()
     query_rec = (st["by_key"].get(key) if key else None) or {
         "summary": summary, "symptom": symptom, "chip": chip, "category": category, "labels": []}
-    result = st["reco"].recommend(query_rec, k=k, exclude_key=key)
+    # 앞선 /recommend 와 같은 인자면 재계산하지 않는다 — 예전에는 사용자 상호작용
+    # 한 번에 검색(임베딩+rerank API)을 두 번 지불했다.
+    result = _recommend_cached(query_rec, k=k, exclude_key=key)
     matches = result["matches"]
     coverage = result.get("coverage", bool(matches))
+    match_recs = [st["by_key"].get(m["key"], m) for m in matches]
 
     def gen():
         if not matches or not coverage:
             yield f"data: {json.dumps({'type': 'done', 'citations': [], 'no_coverage': True}, ensure_ascii=False)}\n\n"
             return
-        valid = {m["key"] for m in matches}
-        # 근거 컨텍스트 강화: 매치를 전체 레코드(증상/디버깅 접근 포함)로 확장
-        match_recs = [st["by_key"].get(m["key"], m) for m in matches]
-        prompt = _explain_prompt_md(query_rec, match_recs)
-        reasoning = os.getenv("RVP_EXPLAIN_REASONING", "0") == "1"
-        acc: list[str] = []
         try:
-            for delta in _llm_stream(prompt, reasoning=reasoning):
+            hit = None if refresh else _explain_md_cached(query_rec, match_recs)
+            if hit:
+                # 캐시본도 델타로 흘려보낸다 — 프론트의 SSE 처리 경로를 하나로 유지.
+                md = hit.get("markdown", "")
+                for i in range(0, len(md), 400):
+                    yield f"data: {json.dumps({'type': 'delta', 'text': md[i:i + 400]}, ensure_ascii=False)}\n\n"
+                yield f"data: {json.dumps({'type': 'done', 'citations': hit.get('citations', []), 'cached': True}, ensure_ascii=False)}\n\n"
+                return
+            acc: list[str] = []
+            for delta in _generate_explain_md(query_rec, match_recs):
                 acc.append(delta)
                 yield f"data: {json.dumps({'type': 'delta', 'text': delta}, ensure_ascii=False)}\n\n"
             full = "".join(acc)
+            valid = {m["key"] for m in matches}
             cited = sorted({m for m in re.findall(r"LSI-\d+", full)} & valid)
-            yield f"data: {json.dumps({'type': 'done', 'citations': cited}, ensure_ascii=False)}\n\n"
+            yield f"data: {json.dumps({'type': 'done', 'citations': cited, 'cached': False}, ensure_ascii=False)}\n\n"
         except Exception as e:
             yield f"data: {json.dumps({'type': 'error', 'message': str(e)[:200]}, ensure_ascii=False)}\n\n"
 
     return StreamingResponse(gen(), media_type="text/event-stream",
                              headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"})
+
+
+# ---------------------------------------------------------------------------
+# 심층 분석 예열(prewarm) — 사용자가 누르기 전에 미리 만들어 둔다.
+#
+# 캐시만 두면 "처음 여는 이슈"는 여전히 수 초를 기다린다. 미해결 이슈는 목록이
+# 정해져 있으므로 백그라운드에서 미리 생성해 두면 첫 클릭도 즉시 뜬다.
+#
+# 비용이 있는 작업(이슈당 LLM 1회)이라 기본은 보수적으로 잡았다:
+#   · 이미 캐시에 있으면 건너뛴다(변화가 없으면 다시 만들지 않는다)
+#   · 한 번에 RVP_PREWARM_LIMIT 건까지, 사이에 텀을 둬 API를 몰아치지 않는다
+#   · RVP_PREWARM=0 이면 아예 돌지 않는다
+# ---------------------------------------------------------------------------
+_PREWARM: dict = {"thread": None, "running": False, "done": 0, "skipped": 0,
+                  "failed": 0, "total": 0, "last_key": "", "error": None,
+                  "finished_at": None}
+
+
+def _prewarm_once(limit: int, gap_sec: float, only_key: str = "") -> None:
+    st = _reco_state()
+    targets = [r for r in st["unresolved"] if not only_key or r["key"] == only_key]
+    _PREWARM.update({"running": True, "done": 0, "skipped": 0, "failed": 0,
+                     "total": min(len(targets), limit), "error": None, "finished_at": None})
+    try:
+        for rec in targets:
+            if _PREWARM["done"] + _PREWARM["skipped"] >= limit:
+                break
+            try:
+                res = _recommend_cached(rec, k=4, exclude_key=rec["key"])
+                if not res["matches"] or not res.get("coverage", True):
+                    _PREWARM["skipped"] += 1     # 게이트 미통과 → 원래도 생성 안 함
+                    continue
+                match_recs = [st["by_key"].get(m["key"], m) for m in res["matches"]]
+                if _explain_md_cached(rec, match_recs) is not None:
+                    _PREWARM["skipped"] += 1     # 이미 있음 — 변화가 없으니 그대로 둔다
+                    continue
+                for _ in _generate_explain_md(rec, match_recs):
+                    pass                          # 토큰은 버리고 캐시만 채운다
+                _PREWARM["done"] += 1
+                _PREWARM["last_key"] = rec["key"]
+                time.sleep(gap_sec)
+            except Exception as e:
+                _PREWARM["failed"] += 1
+                _PREWARM["error"] = f'{rec.get("key","")}: {str(e)[:120]}'
+    finally:
+        _PREWARM["running"] = False
+        _PREWARM["finished_at"] = _dt.datetime.now().isoformat(timespec="seconds")
+        print(f"[prewarm] 생성 {_PREWARM['done']} · 건너뜀 {_PREWARM['skipped']} "
+              f"· 실패 {_PREWARM['failed']}")
+
+
+def _start_prewarm(limit: int | None = None, only_key: str = "") -> bool:
+    """예열을 백그라운드로 시작. 이미 돌고 있으면 False."""
+    if _PREWARM["running"]:
+        return False
+    if os.getenv("RVP_PREWARM", "1") != "1" and not only_key:
+        return False
+    lim = limit if limit is not None else int(os.getenv("RVP_PREWARM_LIMIT", "20") or 0)
+    if lim <= 0:
+        return False
+    gap = float(os.getenv("RVP_PREWARM_GAP_SEC", "1.0") or 0)
+    t = threading.Thread(target=_prewarm_once, args=(lim, gap, only_key),
+                         name="explain-prewarm", daemon=True)
+    _PREWARM["thread"] = t
+    t.start()
+    return True
+
+
+@app.get("/explain/cache")
+def explain_cache_stats():
+    """캐시 현황 + 예열 진행 상태."""
+    return {"cache": llm_cache.stats(),
+            "prewarm": {k: v for k, v in _PREWARM.items() if k != "thread"}}
+
+
+@app.post("/explain/prewarm")
+def explain_prewarm(limit: int = 0, key: str = ""):
+    """예열 수동 시작. limit=0 이면 환경변수 기본값, key 지정 시 그 이슈만."""
+    started = _start_prewarm(limit or None, only_key=key)
+    return {"ok": started,
+            "reason": "" if started else ("이미 실행 중" if _PREWARM["running"] else "비활성(RVP_PREWARM=0 또는 limit=0)"),
+            "prewarm": {k: v for k, v in _PREWARM.items() if k != "thread"}}
+
+
+@app.delete("/explain/cache")
+def explain_cache_clear():
+    """캐시 비우기 — 프롬프트를 바꿨는데 버전을 안 올렸을 때의 탈출구."""
+    return {"ok": True, "removed": llm_cache.clear()}
 
 
 @app.post("/recommend")
@@ -798,8 +969,9 @@ def recommend(req: RecommendRequest):
             "chip": req.chip or "", "category": req.category or "",
             "labels": req.labels or [],
         }
-    # 해결 이슈 키로 질의해도 자기 자신은 매치에서 제외
-    result = st["reco"].recommend(query_rec, k=req.k, exclude_key=req.key)
+    # 해결 이슈 키로 질의해도 자기 자신은 매치에서 제외.
+    # 캐시 경유 — 뒤이어 오는 explain 스트리밍이 같은 검색을 또 하지 않게 한다.
+    result = _recommend_cached(query_rec, k=req.k, exclude_key=req.key)
     # 매치에 메타(생성일·FW) 보강 — 수명주기 신선도/경고 산출용
     for m in result["matches"]:
         src = st["by_key"].get(m.get("key"), {})

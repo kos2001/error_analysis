@@ -73,6 +73,7 @@ export default function Dashboard({ onOpenIssue }: { onOpenIssue: (key: string) 
   const experts = useEndpoint<any>("/knowledge/experts?top=6");
   const articles = useEndpoint<any>("/knowledge/known-issues");
   const kstore = useEndpoint<any>("/knowledge/stats");
+  const cache = useEndpoint<any>("/explain/cache");
   const [queueRev, setQueueRev] = useState(0);
   const queue = useEndpoint<any>("/improve/queue", queueRev);
 
@@ -353,6 +354,42 @@ export default function Dashboard({ onOpenIssue }: { onOpenIssue: (key: string) 
               </div>
             </>
           )}
+        </Card>
+
+        {/* 분석 캐시·예열 */}
+        <Card title="분석 캐시 · 예열" hint="같은 입력이면 다시 생성하지 않는다"
+          loading={cache.loading} error={cache.error} onRetry={cache.reload}>
+          <div className="grid grid-cols-2 gap-2">
+            <StatTile label="저장된 분석" value={cache.data?.cache?.entries ?? "—"}
+              sub={cache.data?.cache?.bytes != null ? `${Math.round(cache.data.cache.bytes / 1024)} KB` : ""}
+              title="질의·근거·모델·프롬프트 버전으로 주소가 정해지는 콘텐츠 캐시" />
+            <StatTile label="예열 생성" value={cache.data?.prewarm?.done ?? "—"}
+              tone={cache.data?.prewarm?.failed ? "warn" : "neutral"}
+              sub={`건너뜀 ${cache.data?.prewarm?.skipped ?? 0} · 실패 ${cache.data?.prewarm?.failed ?? 0}`}
+              title="이미 캐시에 있으면 건너뛴다" />
+          </div>
+          <div className="mt-2 text-[11px] text-zinc-400">
+            프롬프트 버전 {cache.data?.cache?.prompt_version ?? "—"}
+            {cache.data?.prewarm?.running && <span className="ml-2 text-sky-400">예열 진행 중…</span>}
+            {cache.data?.prewarm?.error && <span className="ml-2 text-amber-400">최근 오류: {cache.data.prewarm.error}</span>}
+          </div>
+          <div className="mt-3 flex gap-1.5">
+            <button onClick={async () => {
+                await fetch(`${API}/explain/prewarm`, { method: "POST" }).catch(() => {});
+                cache.reload();
+              }}
+              className="rounded border border-zinc-600 px-2 py-0.5 text-[10px] text-zinc-300 hover:bg-zinc-800">
+              지금 예열
+            </button>
+            <button onClick={async () => {
+                await fetch(`${API}/explain/cache`, { method: "DELETE" }).catch(() => {});
+                cache.reload();
+              }}
+              title="프롬프트를 바꿨는데 버전을 안 올렸을 때만 필요합니다"
+              className="rounded border border-zinc-700 px-2 py-0.5 text-[10px] text-zinc-400 hover:bg-zinc-800">
+              캐시 비우기
+            </button>
+          </div>
         </Card>
 
         {/* 기여 전문가 */}
