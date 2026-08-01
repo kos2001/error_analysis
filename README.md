@@ -77,6 +77,9 @@ HTTP 직접 호출)** 단일 엔진으로 생성한다. 모델·엔드포인트�
   - `GET /jira/sync/status` — 폴러 상태·마지막 결과
   - `POST /jira/sync[?full=true][&reconcile=true]` — 주기를 기다리지 않고 즉시 동기화
   - CLI: `.venv/bin/python src/jira_sync.py [--full|--reconcile|--watch 30]`
+  - 종단 실측(2026-08-01, 주기 5초): Jira 제목 수정 → KB 반영 4.5초 → API 반영 +0.2초,
+    변경 이슈 1건만 재조회(`upserted:1`). 원복도 4.9초에 자동 반영.
+    무변경 폴 1회 = JQL 1건 240ms(중앙) — 주기를 줄여도 부담은 거의 없다.
 - **웹훅(선택)**: 서버가 공개 https URL로 노출된 경우 초 단위 반영.
   수신부 `POST /webhook/jira`는 구현돼 있고, 등록은
   `scripts/jira_webhook_register.py {list|register <공개URL>|delete <id>}`.
