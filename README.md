@@ -85,6 +85,50 @@ HTTP 직접 호출)** 단일 엔진으로 생성한다. 모델·엔드포인트�
   `scripts/jira_webhook_register.py {list|register <공개URL>|delete <id>}`.
   `JIRA_WEBHOOK_SECRET` 설정 시 쿼리로 대조한다. 폴링과 동시 사용해도 무해하다.
 
+### 인증(SSO) · 권한(RBAC)
+
+역할은 둘이다 — **관리자(admin)** / **사용자(user)**. 권한은 역할이 아니라 **기능
+(capability)** 단위로 검사한다: 엔드포인트가 `require("rca.approve")` 처럼 필요한
+기능을 선언하고, 역할→기능 표는 `src/auth.py` 한 곳에만 둔다.
+
+| 기능 | user | admin | 예 |
+|---|:--:|:--:|---|
+| `issue.read` `reco.read` `knowledge.read` | ✓ | ✓ | 이슈·추천·심층 분석·지식 현황 조회 |
+| `rca.draft` `rca.read` | ✓ | ✓ | RCA 초안 → **승인 대기 큐까지만** |
+| `feedback.write` | ✓ | ✓ | 추천 피드백·VOC 제출 |
+| `rca.approve` | | ✓ | **Jira 실제 게시**·거부 |
+| `knowledge.write` | | ✓ | 고장모드 기사·수명주기·온톨로지·부정지식 편집 |
+| `config.write` | | ✓ | LLM/Jira 접속 설정 |
+| `ops.sync` `ops.cache` `ops.eval` | | ✓ | 동기화·재적재·캐시·예열·평가·자기점검 |
+| `voc.manage` `improve.manage` | | ✓ | VOC 열람·상태, 개선 큐 처리 |
+
+**로그인 경로 3가지** (설정된 것만 로그인 화면에 나타난다):
+
+- **OIDC SSO** — 인증 코드 플로우 + PKCE. 코드 교환·`id_token` 검증을 **백엔드가**
+  한다(프런트에서 하면 IdP 토큰이 JS 가 읽는 곳에 남는다). 결과는 이메일만
+  HttpOnly 서명 쿠키에 남기고 IdP 토큰은 저장하지 않는다.
+  `RVP_OIDC_DISCOVERY_URL` `RVP_OIDC_CLIENT_ID` `RVP_OIDC_REDIRECT_URI`
+  (+ `_CLIENT_SECRET` `_SCOPES` `_EMAIL_CLAIM` `_AUDIENCE` `_POST_LOGIN_URL`)
+- **프록시 헤더** — 앞단 SSO 프록시가 검증한 이메일을 신뢰. `RVP_SSO_EMAIL_HEADER`
+  를 **명시해야만** 켜진다(기본값을 두면 아무나 그 헤더를 보내 신원을 가로챈다).
+- **개발용 로그인** — `RVP_AUTH_DEV_LOGIN=1`. IdP 없이 역할 분리를 확인하는 통로로,
+  운영에서는 끈다.
+
+인가 목록은 `data/users.yaml`(예시: `data/users.example.yaml`, git 미추적) 또는
+`RVP_ADMIN_EMAILS`. **둘 다 없으면 인증 비활성 = 전체 권한**이고, 그 상태는 화면의
+"인증 비활성" 배지와 `GET /auth/config` 로 드러난다. 목록 밖 계정은
+`RVP_SSO_DEFAULT_ROLE`(기본 `user`, 빈 값이면 거부).
+
+세션: HttpOnly + SameSite=Lax 서명 쿠키. `RVP_SESSION_SECRET` 을 고정해야 재기동 후
+세션이 유지된다. https 배포에서는 `RVP_COOKIE_SECURE=1`.
+
+개발 서버는 Vite 프록시로 프런트와 API 를 **같은 오리진**으로 맞춘다
+(`VITE_PROXY_TARGET`, 기본 `http://127.0.0.1:8011`) — 교차 사이트에서는 Lax 쿠키가
+실리지 않기 때문이고, 프로덕션은 FastAPI 가 `web/dist` 를 같은 오리진에서 서빙한다.
+
+검증: `.venv/bin/python tests/test_auth_rbac.py` (45개 — 역할별 허용·차단, 세션
+위조·만료, 401/403 구분, 프록시 헤더 신뢰 조건, 인증 비활성 폴백)
+
 ### AI 심층 분석 캐시 · 예열
 
 같은 이슈를 다시 열 때마다 LLM을 새로 돌리지 않는다.
@@ -108,6 +152,10 @@ HTTP 직접 호출)** 단일 엔진으로 생성한다. 모델·엔드포인트�
 src/
   ingest.py             1) Jira 적재
   jira_sync.py          Jira 폴링 증분 동기화 (변경분만 재적재 + 삭제 대조)
+  auth.py               역할→기능 표 + 인가 목록 (관리자/사용자)
+  oidc_sso.py           OIDC 인증 코드 + PKCE (백엔드 코드 교환·id_token 검증)
+  session.py            HttpOnly 서명 세션 쿠키
+  llm_cache.py          LLM 생성물 콘텐츠 주소 캐시
   preprocess.py         2) 전처리 + 엔티티/그래프 (엔티티 패턴 단일 소스)
   explorer.py           3) 탐색/검색/시각화
   recommender.py        해결책 추천기 (graph/bm25/hybrid/embed)
@@ -131,6 +179,7 @@ web/                    Vite + React + TS + Tailwind
 ```
 JIRA_BASE_URL=...        JIRA_PROJECT_KEY=LSI
 JIRA_EMAIL=...           JIRA_API_TOKEN=...      # 또는 JIRA_PAT
+RVP_SESSION_SECRET=...   RVP_ADMIN_EMAILS=...    # 인증·권한 (위 절 참조)
 OPENROUTER_API_KEY=...   OPENROUTER_MODEL=...    # LLM 엔진=agno(OpenRouter)
 ```
 

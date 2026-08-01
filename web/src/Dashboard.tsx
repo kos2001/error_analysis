@@ -11,7 +11,7 @@ import { useCallback, useEffect, useState } from "react";
 import { BarList, Donut, RateBar, StatTile, type BarItem } from "./charts";
 import { ErrorNote, PageHeader, SectionTitle } from "./ui";
 
-const API = (import.meta as any).env?.VITE_API ?? "http://127.0.0.1:8001";
+const API = (import.meta as any).env?.VITE_API ?? "";   // 빈 값 = 같은 오리진(개발은 vite 프록시)
 
 /** 카드 하나의 로딩/실패/성공 상태를 담는 훅.
  *
@@ -61,7 +61,11 @@ function Ok({ text }: { text: string }) {
   return <div className="text-xs text-emerald-400">✓ {text}</div>;
 }
 
-export default function Dashboard({ onOpenIssue }: { onOpenIssue: (key: string) => void }) {
+export default function Dashboard({ onOpenIssue, can }: {
+  onOpenIssue: (key: string) => void;
+  /** 기능 권한 확인 — 권한 없는 조작 버튼은 아예 그리지 않는다(헛클릭 방지). */
+  can: (cap: string) => boolean;
+}) {
   const reco = useEndpoint<any>("/reco/stats");
   const quality = useEndpoint<any>("/knowledge/quality");
   const clusters = useEndpoint<any>("/knowledge/clusters?threshold=0.80&min_size=2");
@@ -245,6 +249,7 @@ export default function Dashboard({ onOpenIssue }: { onOpenIssue: (key: string) 
                     )}
                   </div>
                   <div className="text-xs text-zinc-300">{it.rationale}</div>
+                  {can("improve.manage") && (
                   <div className="mt-1.5 flex gap-1.5">
                     <button onClick={() => setQueueState(it.id, "done")}
                       className="text-[10px] px-2 py-0.5 rounded border border-emerald-800/60 text-emerald-300 hover:bg-emerald-950/40">
@@ -255,6 +260,7 @@ export default function Dashboard({ onOpenIssue }: { onOpenIssue: (key: string) 
                       보류
                     </button>
                   </div>
+                  )}
                 </div>
               ))}
             </div>
@@ -373,6 +379,7 @@ export default function Dashboard({ onOpenIssue }: { onOpenIssue: (key: string) 
             {cache.data?.prewarm?.running && <span className="ml-2 text-sky-400">예열 진행 중…</span>}
             {cache.data?.prewarm?.error && <span className="ml-2 text-amber-400">최근 오류: {cache.data.prewarm.error}</span>}
           </div>
+          {can("ops.cache") && (
           <div className="mt-3 flex gap-1.5">
             <button onClick={async () => {
                 await fetch(`${API}/explain/prewarm`, { method: "POST" }).catch(() => {});
@@ -390,6 +397,7 @@ export default function Dashboard({ onOpenIssue }: { onOpenIssue: (key: string) 
               캐시 비우기
             </button>
           </div>
+          )}
         </Card>
 
         {/* 기여 전문가 */}

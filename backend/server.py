@@ -19,15 +19,18 @@ from typing import Optional
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT / "src"))
 
-from fastapi import FastAPI, HTTPException
+from fastapi import Depends, FastAPI, HTTPException, Request, Response
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import StreamingResponse
+from fastapi.responses import RedirectResponse, StreamingResponse
 from pydantic import BaseModel, Field
 
 from lang_validator import validate_and_fix  # noqa: E402
 from preprocess import parse_issue  # noqa: E402
 from recommender import Recommender, template_key  # noqa: E402
 import app_config  # noqa: E402
+import auth  # noqa: E402
+import oidc_sso  # noqa: E402
+import session  # noqa: E402
 from json_store import read_json, write_json_atomic  # noqa: E402
 from llm_headers import custom_headers  # noqa: E402  사내 게이트웨이 x-service-id/x-user-id
 
@@ -166,10 +169,201 @@ def _build_reco_state() -> dict:
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    # 쿠키 세션을 쓰므로 자격증명 허용이 필요하고, 그러면 와일드카드 오리진은 못 쓴다
+    # (브라우저가 거부한다). 개발용 Vite 오리진을 기본 허용하고 RVP_CORS_ORIGINS 로 넓힌다.
+    allow_origins=[o for o in (os.getenv(
+        "RVP_CORS_ORIGINS",
+        "http://localhost:5173,http://127.0.0.1:5173,http://localhost:4173,http://127.0.0.1:4173",
+    ).split(",")) if o.strip()],
+    allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+# ---------------------------------------------------------------------------
+# 인증(SSO) · 인가(RBAC) — 관리자 / 사용자
+#
+# 세 경로를 지원한다:
+#   oidc  : 사내 IdP 인증 코드 플로우(PKCE). 백엔드가 코드를 교환·검증한다.
+#   proxy : 앞단 SSO 프록시가 검증한 이메일 헤더를 신뢰(RVP_SSO_EMAIL_HEADER).
+#   dev   : 로컬 개발용 수동 로그인(RVP_AUTH_DEV_LOGIN=1). 운영에서는 켜지 않는다.
+#
+# 인가 목록(users.yaml / RVP_ADMIN_EMAILS)이 아예 없으면 인증 비활성 = 전체 권한.
+# 기존 로컬 흐름을 깨지 않기 위한 것이고, 그 상태는 /auth/config 로 드러난다.
+# ---------------------------------------------------------------------------
+_USERS: dict[str, auth.User] | None = None
+_USERS_LOADED = False
+
+
+def _users() -> dict[str, auth.User] | None:
+    global _USERS, _USERS_LOADED
+    if not _USERS_LOADED:
+        _USERS = auth.load_users()
+        _USERS_LOADED = True
+        st = auth.auth_status(_USERS)
+        print(f"[auth] {'활성' if st['enabled'] else '비활성(전체 권한)'} · "
+              f"users_file={'있음' if st['users_file_present'] else '없음'} · "
+              f"admin_env={st['admin_emails_env']} · 기본역할={st['default_role']}")
+    return _USERS
+
+
+def _reload_users() -> None:
+    global _USERS_LOADED
+    _USERS_LOADED = False
+    _users()
+
+
+def _proxy_email(request: Request) -> str:
+    """앞단 SSO 프록시가 넣어 준 이메일 헤더. 헤더 이름이 설정돼야만 신뢰한다.
+
+    기본값을 두지 않는 이유: 임의의 클라이언트가 그 헤더를 직접 보내면 신원을
+    가로챌 수 있다. 프록시 뒤에 있다는 사실을 배포자가 명시해야만 켜진다.
+    """
+    name = os.getenv("RVP_SSO_EMAIL_HEADER", "").strip()
+    return request.headers.get(name, "") if name else ""
+
+
+def current_user(request: Request) -> auth.User | None:
+    """요청의 신원. 인증 비활성이면 ALL_ACCESS, 미인증이면 None."""
+    users = _users()
+    if users is None:
+        return auth.ALL_ACCESS
+    tok = request.cookies.get(session.COOKIE_NAME, "")
+    body = session.verify(tok) if tok else None
+    if body:
+        u = auth.resolve_email(users, str(body.get("email", "")), via=str(body.get("via", "oidc")))
+        if u is not None:
+            return u                          # 쿠키가 있어도 인가 목록이 기준이다
+    email = _proxy_email(request)
+    if email:
+        return auth.resolve_email(users, email, via="proxy")
+    return None
+
+
+def require(capability: str):
+    """해당 기능 권한이 있어야 통과하는 의존성.
+
+    401(미인증)과 403(권한 없음)을 구분한다 — 프런트가 로그인 유도와 권한 안내를
+    다르게 처리해야 한다.
+    """
+    def dep(request: Request) -> auth.User:
+        u = current_user(request)
+        if u is None:
+            raise HTTPException(status_code=401, detail="로그인이 필요합니다")
+        if not u.can(capability):
+            raise HTTPException(
+                status_code=403,
+                detail=f"권한 없음: 이 작업에는 '{capability}' 권한이 필요합니다 (현재 역할: {u.role})")
+        return u
+    return dep
+
+
+@app.get("/auth/config")
+def auth_config():
+    """로그인 화면이 필요한지, 어떤 경로가 열려 있는지 — 인증 전에도 볼 수 있어야 한다."""
+    oidc = oidc_sso.settings_from_env()
+    return {
+        **auth.auth_status(_users()),
+        "modes": {
+            "oidc": oidc.enabled,
+            "proxy": bool(os.getenv("RVP_SSO_EMAIL_HEADER", "").strip()),
+            "dev": os.getenv("RVP_AUTH_DEV_LOGIN", "0") == "1",
+        },
+        "oidc_discovery": oidc.discovery_url,
+    }
+
+
+@app.get("/auth/me")
+def auth_me(request: Request):
+    u = current_user(request)
+    if u is None:
+        raise HTTPException(status_code=401, detail="로그인이 필요합니다")
+    return u.public()
+
+
+@app.get("/auth/login")
+def auth_login(next: str = ""):
+    """IdP 로그인 화면으로 리다이렉트."""
+    st = oidc_sso.settings_from_env()
+    if not st.enabled:
+        raise HTTPException(status_code=503,
+                            detail="SSO(OIDC)가 설정되지 않았습니다 — RVP_OIDC_* 를 확인하세요")
+    try:
+        url = oidc_sso.authorization_url(st, next_url=next)
+    except oidc_sso.SsoError as e:
+        raise HTTPException(status_code=502, detail=str(e))
+    return RedirectResponse(url, status_code=302)
+
+
+@app.get("/auth/callback")
+def auth_callback(code: str = "", state: str = "", error: str = "",
+                  error_description: str = ""):
+    """IdP 콜백 — 코드 교환 → id_token 검증 → 인가 → 세션 쿠키."""
+    st = oidc_sso.settings_from_env()
+    if error:
+        raise HTTPException(status_code=401, detail=f"IdP 로그인 실패: {error} {error_description}".strip())
+    pending = oidc_sso.pop_pending(state)
+    if pending is None:
+        # state 는 1회용 + 만료됨. 재사용·위조·시간초과를 구분해 알려 주지 않는다.
+        raise HTTPException(status_code=400, detail="로그인 요청이 만료되었거나 유효하지 않습니다 — 다시 시도하세요")
+    try:
+        tok = oidc_sso.exchange_code(st, code, pending.verifier)
+        claims = oidc_sso.verify_id_token(st, tok.get("id_token", ""))
+    except oidc_sso.SsoError as e:
+        raise HTTPException(status_code=401, detail=str(e))
+    email = oidc_sso.email_from_claims(st, claims)
+    u = auth.resolve_email(_users(), email, via="oidc")
+    if u is None:
+        raise HTTPException(status_code=403,
+                            detail=f"{email or '(이메일 없음)'} 은 이 서비스에 인가되지 않았습니다 — 관리자에게 요청하세요")
+    dest = pending.next_url or st.post_login_url or "/"
+    resp = RedirectResponse(dest, status_code=302)
+    # IdP 토큰은 담지 않는다 — 검증 결과(이메일)만 남긴다.
+    resp.set_cookie(session.COOKIE_NAME,
+                    session.issue({"email": u.email, "via": "oidc"}),
+                    **session.cookie_kwargs())
+    print(f"[auth] 로그인 {u.email} · 역할 {u.role} · via oidc")
+    return resp
+
+
+class DevLoginBody(BaseModel):
+    email: str
+
+
+@app.post("/auth/dev-login")
+def auth_dev_login(body: DevLoginBody, response: Response):
+    """로컬 개발용 로그인 — RVP_AUTH_DEV_LOGIN=1 일 때만 열린다.
+
+    인가 목록에 있는 이메일만 받는다. IdP 없이 역할 분리를 확인하기 위한 통로이고,
+    운영에서 켜면 이메일만 알면 누구나 그 역할이 되므로 기본값은 꺼짐이다.
+    """
+    if os.getenv("RVP_AUTH_DEV_LOGIN", "0") != "1":
+        raise HTTPException(status_code=404, detail="개발용 로그인이 비활성입니다")
+    users = _users()
+    if users is None:
+        raise HTTPException(status_code=400,
+                            detail="인가 목록이 없어 인증이 비활성 상태입니다(이미 전체 권한)")
+    u = users.get(auth.normalize_email(body.email))
+    if u is None:
+        raise HTTPException(status_code=403, detail="인가 목록에 없는 이메일입니다")
+    response.set_cookie(session.COOKIE_NAME,
+                        session.issue({"email": u.email, "via": "dev"}),
+                        **session.cookie_kwargs())
+    print(f"[auth] 개발 로그인 {u.email} · 역할 {u.role}")
+    return {**u.public(), "via": "dev"}
+
+
+@app.post("/auth/logout")
+def auth_logout(response: Response):
+    response.delete_cookie(session.COOKIE_NAME, path="/")
+    return {"ok": True}
+
+
+@app.post("/auth/reload")
+def auth_reload(_u: auth.User = Depends(require("config.write"))):
+    """users.yaml 을 다시 읽는다 — 사용자 추가 후 재기동하지 않기 위함."""
+    _reload_users()
+    return {"ok": True, **auth.auth_status(_users())}
 
 
 @app.get("/health")
@@ -185,19 +379,19 @@ class ConfigBody(BaseModel):
     llm: Optional[dict] = None        # {gateway_url, api_key, model} → OpenRouter(agno)
 
 
-@app.get("/config/status")
+@app.get("/config/status", dependencies=[Depends(require("issue.read"))])
 def config_status():
     return app_config.status()
 
 
-@app.post("/config")
+@app.post("/config", dependencies=[Depends(require("config.write"))])
 def config_save(body: ConfigBody):
     st = app_config.save(body.jira, body.llm)
     _invalidate_reco()  # Jira 변경 반영 위해 KB 캐시 무효화
     return st
 
 
-@app.post("/config/test/jira")
+@app.post("/config/test/jira", dependencies=[Depends(require("config.write"))])
 def config_test_jira(body: ConfigBody):
     import requests
     j = body.jira or {}
@@ -226,7 +420,7 @@ def config_test_jira(body: ConfigBody):
         return {"ok": False, "error": str(e)[:200]}
 
 
-@app.post("/config/test/llm")
+@app.post("/config/test/llm", dependencies=[Depends(require("config.write"))])
 def config_test_llm(body: ConfigBody):
     """OpenRouter(agno) 연결 테스트 — /models 조회."""
     import requests
@@ -355,7 +549,7 @@ def _stop_jira_poller() -> None:
         stop.set()
 
 
-@app.get("/jira/sync/status")
+@app.get("/jira/sync/status", dependencies=[Depends(require("issue.read"))])
 def jira_sync_status():
     """폴러 상태 + 마지막 동기화 결과."""
     import jira_sync
@@ -371,7 +565,7 @@ def jira_sync_status():
     }
 
 
-@app.post("/jira/sync")
+@app.post("/jira/sync", dependencies=[Depends(require("ops.sync"))])
 def jira_sync_now(full: bool = False, reconcile: bool = False):
     """수동 동기화 — 폴 주기를 기다리지 않고 즉시 반영."""
     import jira_sync
@@ -400,7 +594,7 @@ class RecommendRequest(BaseModel):
     explain: bool = False              # LLM으로 종합 설명 생성
 
 
-@app.get("/reco/stats")
+@app.get("/reco/stats", dependencies=[Depends(require("issue.read"))])
 def reco_stats():
     st = _reco_state()
     reco = st["reco"]
@@ -426,7 +620,7 @@ class RecoFeedbackBody(BaseModel):
     note: str = ""
 
 
-@app.post("/reco/feedback")
+@app.post("/reco/feedback", dependencies=[Depends(require("feedback.write"))])
 def reco_feedback_record(req: RecoFeedbackBody):  # 함수명: 모듈 reco_feedback과 충돌 회피
     """추천 유용성/결과 피드백 기록(P1-3) — 도움됨·아님, 실제 근본원인 여부."""
     try:
@@ -441,7 +635,7 @@ def reco_feedback_record(req: RecoFeedbackBody):  # 함수명: 모듈 reco_feedb
         return {"ok": False, "error": str(e)}
 
 
-@app.get("/reco/feedback/stats")
+@app.get("/reco/feedback/stats", dependencies=[Depends(require("knowledge.read"))])
 def reco_feedback_stats():
     """유용성 집계 + ROI 프록시 + 실전형 평가셋 정답 쌍."""
     return {"stats": reco_feedback.stats(), "eval_pairs": reco_feedback.eval_pairs()}
@@ -457,7 +651,7 @@ class VocBody(BaseModel):
     context: str = ""            # 어느 화면/맥락에서 남겼는지(선택)
 
 
-@app.post("/voc")
+@app.post("/voc", dependencies=[Depends(require("feedback.write"))])
 def voc_submit(req: VocBody):
     """VOC 등록(버그·개선요청·칭찬·문의)."""
     import voc_store
@@ -469,7 +663,7 @@ def voc_submit(req: VocBody):
         return {"ok": False, "error": str(e)}
 
 
-@app.get("/voc")
+@app.get("/voc", dependencies=[Depends(require("voc.manage"))])
 def voc_list(state: str = ""):
     """VOC 목록 + 집계."""
     import voc_store
@@ -481,7 +675,7 @@ class VocStateBody(BaseModel):
     state: str                   # open | triaged | resolved | wont_fix
 
 
-@app.post("/voc/state")
+@app.post("/voc/state", dependencies=[Depends(require("voc.manage"))])
 def voc_set_state(req: VocStateBody):
     """VOC 상태 변경(분류/해결/보류)."""
     import voc_store
@@ -492,7 +686,7 @@ def voc_set_state(req: VocStateBody):
         return {"ok": False, "error": str(e)}
 
 
-@app.get("/issues/unresolved")
+@app.get("/issues/unresolved", dependencies=[Depends(require("issue.read"))])
 def unresolved_issues():
     st = _reco_state()
     out = []
@@ -508,7 +702,7 @@ def unresolved_issues():
     return {"count": len(out), "issues": out}
 
 
-@app.get("/graph")
+@app.get("/graph", dependencies=[Depends(require("issue.read"))])
 def issue_graph(key: Optional[str] = None, k: int = 12, min_shared: int = 2):
     """이슈 간 관계 그래프 — 공유 엔티티(칩/분류/기술용어/라벨) 기반.
 
@@ -820,7 +1014,7 @@ def _generate_explain_md(query_rec: dict, match_recs: list[dict]):
         _explain_md_store(query_rec, match_recs, {"markdown": full, "citations": cited})
 
 
-@app.get("/recommend/explain/stream")
+@app.get("/recommend/explain/stream", dependencies=[Depends(require("reco.read"))])
 def explain_stream(key: Optional[str] = None, summary: str = "", symptom: str = "",
                    chip: str = "", category: str = "", k: int = 4, refresh: bool = False):
     """LLM 종합 분석 SSE 스트리밍 — 본문은 토큰 단위로, 인용 검증은 완료 시.
@@ -933,14 +1127,14 @@ def _start_prewarm(limit: int | None = None, only_key: str = "") -> bool:
     return True
 
 
-@app.get("/explain/cache")
+@app.get("/explain/cache", dependencies=[Depends(require("knowledge.read"))])
 def explain_cache_stats():
     """캐시 현황 + 예열 진행 상태."""
     return {"cache": llm_cache.stats(),
             "prewarm": {k: v for k, v in _PREWARM.items() if k != "thread"}}
 
 
-@app.post("/explain/prewarm")
+@app.post("/explain/prewarm", dependencies=[Depends(require("ops.cache"))])
 def explain_prewarm(limit: int = 0, key: str = ""):
     """예열 수동 시작. limit=0 이면 환경변수 기본값, key 지정 시 그 이슈만."""
     started = _start_prewarm(limit or None, only_key=key)
@@ -949,13 +1143,13 @@ def explain_prewarm(limit: int = 0, key: str = ""):
             "prewarm": {k: v for k, v in _PREWARM.items() if k != "thread"}}
 
 
-@app.delete("/explain/cache")
+@app.delete("/explain/cache", dependencies=[Depends(require("ops.cache"))])
 def explain_cache_clear():
     """캐시 비우기 — 프롬프트를 바꿨는데 버전을 안 올렸을 때의 탈출구."""
     return {"ok": True, "removed": llm_cache.clear()}
 
 
-@app.post("/recommend")
+@app.post("/recommend", dependencies=[Depends(require("reco.read"))])
 def recommend(req: RecommendRequest):
     st = _reco_state()
     if req.key:
@@ -1141,7 +1335,7 @@ def _queue_result(saved: dict) -> dict:
             "item": saved, "counts": rca_queue.counts()}
 
 
-@app.post("/rca/draft")
+@app.post("/rca/draft", dependencies=[Depends(require("rca.draft"))])
 def rca_draft(req: KeyBody):
     """미해결 이슈에 대한 RCA 댓글 초안 생성 → 승인 큐(pending)에 적재. Jira 쓰기 없음."""
     st = _reco_state()
@@ -1179,7 +1373,7 @@ class AnalysisDraftBody(BaseModel):
     citations: list[str] = []   # 검증된 인용 키
 
 
-@app.post("/rca/draft-from-analysis")
+@app.post("/rca/draft-from-analysis", dependencies=[Depends(require("rca.draft"))])
 def rca_draft_from_analysis(req: AnalysisDraftBody):
     """시니어 종합 분석(LLM)을 RCA 댓글 본문으로 → 승인 큐. 생성물이라 항상 검토 필요."""
     st = _reco_state()
@@ -1209,7 +1403,7 @@ def rca_draft_from_analysis(req: AnalysisDraftBody):
     return _queue_result(rca_queue.upsert(item))
 
 
-@app.get("/rca/pending")
+@app.get("/rca/pending", dependencies=[Depends(require("rca.read"))])
 def rca_pending():
     return {"items": rca_queue.items("pending"), "counts": rca_queue.counts()}
 
@@ -1219,7 +1413,7 @@ class ApproveBody(BaseModel):
     body: Optional[str] = None   # 사람이 수정한 본문(있으면 이걸 게시·기록)
 
 
-@app.post("/rca/approve")
+@app.post("/rca/approve", dependencies=[Depends(require("rca.approve"))])
 def rca_approve(req: ApproveBody):
     """HITL 게이트 — 사람 승인(+수정) 시에만 Jira에 게시. 수정 내용은 피드백에 기록."""
     item = rca_queue.get(req.key)
@@ -1263,7 +1457,7 @@ def rca_approve(req: ApproveBody):
         return {"ok": False, "error": str(e)[:200]}
 
 
-@app.get("/rca/feedback")
+@app.get("/rca/feedback", dependencies=[Depends(require("knowledge.read"))])
 def rca_feedback_stats():
     return {"stats": rca_feedback.stats(), "recent_edits": rca_feedback.recent_edits(5)}
 
@@ -1271,13 +1465,13 @@ def rca_feedback_stats():
 # ---------------------------------------------------------------------------
 # 지식 자산 영속화·환류 (P1-1)
 # ---------------------------------------------------------------------------
-@app.get("/knowledge/stats")
+@app.get("/knowledge/stats", dependencies=[Depends(require("knowledge.read"))])
 def knowledge_stats():
     """영속 큐레이션 지식 저장소 현황(건수·출처·저장 경로)."""
     return {"knowledge": knowledge_store.stats()}
 
 
-@app.get("/knowledge/quality")
+@app.get("/knowledge/quality", dependencies=[Depends(require("knowledge.read"))])
 def knowledge_quality():
     """인입 KB 품질 리포트(P1-2) — 상태별 필드 충족률 + 무음 실패 의심 키."""
     st = _reco_state()
@@ -1289,7 +1483,7 @@ def knowledge_quality():
 # ---------------------------------------------------------------------------
 # 고장모드(Known-Issue) 기사 계층 (P2-4)
 # ---------------------------------------------------------------------------
-@app.get("/knowledge/clusters")
+@app.get("/knowledge/clusters", dependencies=[Depends(require("knowledge.read"))])
 def knowledge_clusters(threshold: float = 0.80, min_size: int = 2):
     """해결 KB 임베딩 군집 → 고장모드 후보(중복 사례 묶음). 승격 검토용."""
     st = _reco_state()
@@ -1311,7 +1505,7 @@ class PromoteBody(BaseModel):
     article_id: str = ""             # 지정 시 기존 기사 갱신(멤버 합집합)
 
 
-@app.post("/knowledge/known-issue")
+@app.post("/knowledge/known-issue", dependencies=[Depends(require("knowledge.write"))])
 def knowledge_promote(req: PromoteBody):
     """후보 군집(또는 선택 사례)을 정규 Known-Issue 기사로 승격/갱신."""
     st = _reco_state()
@@ -1340,7 +1534,7 @@ def knowledge_promote(req: PromoteBody):
         return {"ok": False, "error": str(e)}
 
 
-@app.get("/knowledge/known-issues")
+@app.get("/knowledge/known-issues", dependencies=[Depends(require("knowledge.read"))])
 def knowledge_known_issues():
     """승격된 Known-Issue 기사 목록."""
     return {"articles": failure_modes.articles(), "stats": failure_modes.stats()}
@@ -1356,7 +1550,7 @@ class LifecycleBody(BaseModel):
     reason: str = ""
 
 
-@app.post("/knowledge/lifecycle")
+@app.post("/knowledge/lifecycle", dependencies=[Depends(require("knowledge.write"))])
 def knowledge_lifecycle(req: LifecycleBody):
     """사례 수명주기 상태 설정(폐기/대체). 폐기·대체 사례는 추천에서 강등·경고."""
     try:
@@ -1368,7 +1562,7 @@ def knowledge_lifecycle(req: LifecycleBody):
         return {"ok": False, "error": str(e)}
 
 
-@app.get("/knowledge/lifecycle/stats")
+@app.get("/knowledge/lifecycle/stats", dependencies=[Depends(require("knowledge.read"))])
 def knowledge_lifecycle_stats():
     return {"stats": lifecycle.stats()}
 
@@ -1376,13 +1570,13 @@ def knowledge_lifecycle_stats():
 # ---------------------------------------------------------------------------
 # 온톨로지 거버넌스 (P2-6)
 # ---------------------------------------------------------------------------
-@app.get("/knowledge/ontology")
+@app.get("/knowledge/ontology", dependencies=[Depends(require("knowledge.read"))])
 def knowledge_ontology():
     """통제 어휘(동의어 그룹·통제 분류) 현황."""
     return {"vocab": ontology.vocab(), "stats": ontology.stats()}
 
 
-@app.get("/knowledge/ontology/review")
+@app.get("/knowledge/ontology/review", dependencies=[Depends(require("knowledge.read"))])
 def knowledge_ontology_review(top: int = 40):
     """통제 어휘에 없는 엔티티/분류를 빈도순으로 — canonical 승격 검토 큐."""
     st = _reco_state()
@@ -1395,7 +1589,7 @@ class SynonymBody(BaseModel):
     aliases: list[str] = []
 
 
-@app.post("/knowledge/ontology/synonym")
+@app.post("/knowledge/ontology/synonym", dependencies=[Depends(require("knowledge.write"))])
 def knowledge_ontology_synonym(req: SynonymBody):
     """동의어 그룹 추가/확장(alias→canonical). 다음 재빌드부터 엔티티 통합."""
     try:
@@ -1410,7 +1604,7 @@ class CategoriesBody(BaseModel):
     categories: list[str]
 
 
-@app.post("/knowledge/ontology/categories")
+@app.post("/knowledge/ontology/categories", dependencies=[Depends(require("knowledge.write"))])
 def knowledge_ontology_categories(req: CategoriesBody):
     """통제 분류 어휘 설정."""
     out = ontology.set_categories(req.categories)
@@ -1426,7 +1620,7 @@ class NegativeBody(BaseModel):
     reason: str = ""
 
 
-@app.post("/knowledge/negative")
+@app.post("/knowledge/negative", dependencies=[Depends(require("knowledge.write"))])
 def knowledge_negative(req: NegativeBody):
     """기각된 가설 기록 — 심층 분석 시 재안 방지에 활용."""
     try:
@@ -1437,7 +1631,7 @@ def knowledge_negative(req: NegativeBody):
         return {"ok": False, "error": str(e)}
 
 
-@app.get("/knowledge/negative")
+@app.get("/knowledge/negative", dependencies=[Depends(require("knowledge.read"))])
 def knowledge_negative_get(key: str):
     """특정 이슈의 기각된 가설 목록."""
     return {"key": key, "rejected": negative_knowledge.get(key), "stats": negative_knowledge.stats()}
@@ -1446,7 +1640,7 @@ def knowledge_negative_get(key: str):
 # ---------------------------------------------------------------------------
 # 지식 공백 관측성 (P3-8)
 # ---------------------------------------------------------------------------
-@app.get("/knowledge/gaps")
+@app.get("/knowledge/gaps", dependencies=[Depends(require("knowledge.read"))])
 def knowledge_gaps_report(top: int = 20):
     """지식 공백 대시보드 — 자주 질의되나 사례 없는(coverage 미통과) 영역 집계."""
     return knowledge_gaps.report(top=top)
@@ -1455,7 +1649,7 @@ def knowledge_gaps_report(top: int = 20):
 # ---------------------------------------------------------------------------
 # 결과·효능 추적 (자기개선 #1)
 # ---------------------------------------------------------------------------
-@app.post("/knowledge/outcomes/refresh")
+@app.post("/knowledge/outcomes/refresh", dependencies=[Depends(require("knowledge.write"))])
 def knowledge_outcomes_refresh():
     """게시된 RCA 대상 이슈의 현재 Jira 상태를 조회해 효능(게시 후 해결 여부) 갱신."""
     import outcome_tracker
@@ -1467,7 +1661,7 @@ def knowledge_outcomes_refresh():
         return {"ok": False, "error": str(e)[:200]}
 
 
-@app.get("/knowledge/outcomes")
+@app.get("/knowledge/outcomes", dependencies=[Depends(require("knowledge.read"))])
 def knowledge_outcomes():
     """효능 집계 — resolved_after_rca/pending 비율 + 효능율."""
     import outcome_tracker
@@ -1477,7 +1671,7 @@ def knowledge_outcomes():
 # ---------------------------------------------------------------------------
 # 지식 모순 탐지 (자기개선 #2)
 # ---------------------------------------------------------------------------
-@app.get("/knowledge/contradictions")
+@app.get("/knowledge/contradictions", dependencies=[Depends(require("knowledge.read"))])
 def knowledge_contradictions(sim_hi: float = 0.85, rc_lo: float = 0.60):
     """같은 고장모드(문서 유사↑)인데 근본원인이 엇갈리는(근본원인 유사↓) 쌍 = 모순 후보."""
     import contradictions
@@ -1488,7 +1682,7 @@ def knowledge_contradictions(sim_hi: float = 0.85, rc_lo: float = 0.60):
 # ---------------------------------------------------------------------------
 # 평가셋 빌더 (자기개선 #0 — 평가 기질)
 # ---------------------------------------------------------------------------
-@app.post("/eval/build")
+@app.post("/eval/build", dependencies=[Depends(require("ops.eval"))])
 def eval_build():
     """실신호 평가셋(real: outcome+feedback) + 변별 hard셋(증상만) 재빌드."""
     import eval_builder
@@ -1497,7 +1691,7 @@ def eval_build():
     return {"real": eval_builder.real_pairs(st["by_key"]), "hard": eval_builder.hard_set(base)}
 
 
-@app.post("/eval/paraphrase/generate")
+@app.post("/eval/paraphrase/generate", dependencies=[Depends(require("ops.eval"))])
 def eval_paraphrase_generate(per_template: int = 1, max_templates: int = 10):
     """LLM 재서술로 변별 평가셋 확장(토큰 비용 — max_templates로 제한). 누적 저장."""
     import eval_builder
@@ -1519,7 +1713,7 @@ class OwnerBody(BaseModel):
     role: str = ""
 
 
-@app.post("/knowledge/ownership")
+@app.post("/knowledge/ownership", dependencies=[Depends(require("knowledge.write"))])
 def knowledge_ownership(req: OwnerBody):
     """사례/기사의 저자·검증자·역할 기록(책임성·신뢰가중·전문가 탐색용)."""
     try:
@@ -1530,7 +1724,7 @@ def knowledge_ownership(req: OwnerBody):
         return {"ok": False, "error": str(e)}
 
 
-@app.get("/knowledge/experts")
+@app.get("/knowledge/experts", dependencies=[Depends(require("knowledge.read"))])
 def knowledge_experts(category: str = "", template: str = "", top: int = 5):
     """find-the-expert — 고장 클래스별 기여 빈도순 전문가 후보."""
     return ownership.experts_for(category=category, template=template, top=top)
@@ -1539,7 +1733,7 @@ def knowledge_experts(category: str = "", template: str = "", top: int = 5):
 # ---------------------------------------------------------------------------
 # 지식 export·상호운용 (P3-10)
 # ---------------------------------------------------------------------------
-@app.get("/knowledge/export")
+@app.get("/knowledge/export", dependencies=[Depends(require("knowledge.read"))])
 def knowledge_export_endpoint(format: str = "json"):  # 함수명: 모듈 knowledge_export과 충돌 회피
     """축적 지식 내보내기 — format=json(구조화) | markdown(위키 붙여넣기용)."""
     if format == "markdown":
@@ -1549,7 +1743,7 @@ def knowledge_export_endpoint(format: str = "json"):  # 함수명: 모듈 knowle
     return knowledge_export.bundle()
 
 
-@app.get("/selfcheck")
+@app.get("/selfcheck", dependencies=[Depends(require("ops.eval"))])
 def selfcheck(save: bool = True):
     """자기 개선 점검 — 모든 측정 신호 집계 + 직전 대비 드리프트 + 개선 제안.
 
@@ -1564,7 +1758,7 @@ class ParamEvalBody(BaseModel):
     value: float
 
 
-@app.post("/selfcheck/evaluate-param")
+@app.post("/selfcheck/evaluate-param", dependencies=[Depends(require("ops.eval"))])
 def selfcheck_evaluate_param(req: ParamEvalBody):
     """L2 — 후보 파라미터를 동결 평가셋에 shadow 평가(READ-ONLY, live 불변).
 
@@ -1576,7 +1770,7 @@ def selfcheck_evaluate_param(req: ParamEvalBody):
         return {"error": str(e)}
 
 
-@app.post("/selfcheck/apply-param")
+@app.post("/selfcheck/apply-param", dependencies=[Depends(require("ops.eval"))])
 def selfcheck_apply_param(req: ParamEvalBody):
     """L2 적용 — 무회귀 게이트를 재실행해 통과할 때만 override 영속·반영(되돌림 가능).
 
@@ -1595,7 +1789,7 @@ def selfcheck_apply_param(req: ParamEvalBody):
             "env": env_key, "verdict": verdict}
 
 
-@app.post("/selfcheck/reset-param")
+@app.post("/selfcheck/reset-param", dependencies=[Depends(require("ops.eval"))])
 def selfcheck_reset_param(param: str):
     """L2 되돌리기 — 파라미터 override 제거(클래스 기본값 복귀)."""
     env_key = self_improve.TUNABLE.get(param)
@@ -1609,7 +1803,7 @@ def selfcheck_reset_param(param: str):
 # ---------------------------------------------------------------------------
 # 자기 개선 loop — L3 지식 변경 제안 큐 (사람 검토 전용, loop는 실행 안 함)
 # ---------------------------------------------------------------------------
-@app.post("/improve/suggest")
+@app.post("/improve/suggest", dependencies=[Depends(require("improve.manage"))])
 def improve_suggest():
     """신호에서 지식 변경 제안을 도출해 큐에 병합(거부/완료 상태 보존). loop는 실행 안 함."""
     st = _reco_state()
@@ -1619,7 +1813,7 @@ def improve_suggest():
     return {"generated": len(generated), **res, "open_items": improve_queue.items("open")}
 
 
-@app.get("/improve/queue")
+@app.get("/improve/queue", dependencies=[Depends(require("knowledge.read"))])
 def improve_queue_list(state: str = "open"):
     """제안 큐 조회(기본 open)."""
     return {"items": improve_queue.items(state), "counts": improve_queue.counts()}
@@ -1630,7 +1824,7 @@ class SuggestStateBody(BaseModel):
     state: str           # open | done | dismissed
 
 
-@app.post("/improve/queue/state")
+@app.post("/improve/queue/state", dependencies=[Depends(require("improve.manage"))])
 def improve_queue_state(req: SuggestStateBody):
     """제안 상태 변경(사람 결정: done 완료 / dismissed 거부)."""
     try:
@@ -1640,7 +1834,7 @@ def improve_queue_state(req: SuggestStateBody):
         return {"ok": False, "error": str(e)}
 
 
-@app.post("/reco/reload")
+@app.post("/reco/reload", dependencies=[Depends(require("ops.sync"))])
 def reco_reload():
     """추천 KB 캐시 무효화 — 새 큐레이션 지식을 서버 재시작 없이 즉시 반영."""
     _invalidate_reco()
@@ -1648,7 +1842,7 @@ def reco_reload():
     return {"ok": True, "kb_size": len(st["resolved"]), "by_key": len(st["by_key"])}
 
 
-@app.post("/knowledge/rebuild-from-jira")
+@app.post("/knowledge/rebuild-from-jira", dependencies=[Depends(require("ops.sync"))])
 def knowledge_rebuild_from_jira():
     """재해 복구/머신 간 동기화 — Jira 봇 댓글(조직 SoT)에서 지식 자산을 재구성한다.
 
@@ -1662,7 +1856,7 @@ def knowledge_rebuild_from_jira():
         return {"ok": False, "error": str(e)[:200]}
 
 
-@app.post("/rca/reject")
+@app.post("/rca/reject", dependencies=[Depends(require("rca.approve"))])
 def rca_reject(req: KeyBody):
     updated = rca_queue.set_state(req.key, "rejected")
     return {"ok": bool(updated), "item": updated, "counts": rca_queue.counts()}
@@ -1708,7 +1902,7 @@ class ValidateBody(BaseModel):
     body: Optional[str] = None   # 현재(수정된) 본문; 없으면 큐의 원본
 
 
-@app.post("/rca/validate")
+@app.post("/rca/validate", dependencies=[Depends(require("rca.draft"))])
 def rca_validate(req: ValidateBody):
     """수정사항 검증 — (1) 가드레일: 인용 키 ⊆ KB, 한자/CJK, 빈값  (2) Agent-as-Judge:
     근거 충실도·인용 정합·실행가능성 1~10 채점. 승인 전 품질 확인용(차단 아님)."""

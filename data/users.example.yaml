@@ -1,0 +1,23 @@
+# 인가 목록 — 이 파일을 data/users.yaml 로 복사해서 쓴다.
+#
+# 이 파일이 없고 RVP_ADMIN_EMAILS 도 비어 있으면 **인증 비활성**(전체 권한)이다.
+# 로컬 개발 편의를 위한 기본값이므로, 운영에서는 반드시 목록을 둔다.
+#
+# 역할:
+#   admin — 운영·설정·Jira 게시·지식 편집·동기화·평가
+#   user  — 이슈 조회·추천·심층 분석·RCA 초안 제출·피드백/VOC
+#
+# 목록에 없는 인증된 사용자는 RVP_SSO_DEFAULT_ROLE(기본 user)로 들어온다.
+# 화이트리스트로만 운영하려면 RVP_SSO_DEFAULT_ROLE= (빈 값) 으로 두면 거부된다.
+users:
+  - email: oseok.kim2001@gmail.com
+    name: 김오석
+    role: admin
+  - email: engineer@example.com
+    name: 분석 담당 엔지니어
+    role: user
+  # 퇴사·권한회수는 지우지 말고 revoked 로 남긴다 — 이력이 보인다.
+  # - email: former@example.com
+  #   name: 前 담당자
+  #   role: user
+  #   revoked: true

@@ -5,7 +5,7 @@ import RelationGraph, { type GraphData } from "./RelationGraph";
 import FreshnessBadge from "./FreshnessBadge";
 import { Button, inputCls, selectCls } from "./ui";
 
-const API = (import.meta as any).env?.VITE_API ?? "http://127.0.0.1:8001";
+const API = (import.meta as any).env?.VITE_API ?? "";   // 빈 값 = 같은 오리진(개발은 vite 프록시)
 
 type Issue = {
   key: string; summary: string; status: string; chip: string;
@@ -201,8 +201,10 @@ export default function FailureAnalysis({ onQueueChange, routeKey, onSelectKey, 
   const runExplain = (key: string, refresh = false) => {
     setExplaining(true);
     setReco((prev) => (prev ? { ...prev, explanation: "", explanation_citations: [], explanation_dropped_citations: [], explanation_cached: undefined } : prev));
+    // withCredentials: SSE 도 쿠키 세션을 실어야 한다(전역 fetch 래퍼가 못 덮는 경로).
     const es = new EventSource(
-      `${API}/recommend/explain/stream?key=${encodeURIComponent(key)}&k=4${refresh ? "&refresh=true" : ""}`);
+      `${API}/recommend/explain/stream?key=${encodeURIComponent(key)}&k=4${refresh ? "&refresh=true" : ""}`,
+      { withCredentials: true });
     const finish = () => { es.close(); setExplaining(false); };
     es.onmessage = (e) => {
       let d: any; try { d = JSON.parse(e.data); } catch { return; }

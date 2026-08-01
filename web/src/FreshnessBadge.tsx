@@ -7,7 +7,7 @@
 
 import { useCallback, useEffect, useState } from "react";
 
-const API = (import.meta as any).env?.VITE_API ?? "http://127.0.0.1:8001";
+const API = (import.meta as any).env?.VITE_API ?? "";   // 빈 값 = 같은 오리진(개발은 vite 프록시)
 
 type SyncStatus = {
   poll_interval_sec: number;
