@@ -321,8 +321,13 @@ def _jira_poll_loop(interval: int, stop: threading.Event) -> None:
 
 
 def _start_jira_poller() -> None:
-    """RVP_JIRA_POLL_SEC 주기로 백그라운드 폴링 시작. 0 이면 비활성."""
-    interval = int(os.getenv("RVP_JIRA_POLL_SEC", "30") or 0)
+    """RVP_JIRA_POLL_SEC 주기로 백그라운드 폴링 시작. 0 이면 비활성.
+
+    기본 10초 근거(실측 2026-08-01): 무변경 폴 1회 = JQL 1건 240ms(중앙), 삭제 대조
+    포함 회차 780ms. 10초면 하루 8,640회로 Jira 레이트 리밋 대비 무시할 수준이면서
+    평균 반영 지연 5초(최악 10초). 더 짧게(5초 → 평균 2.5초)도 부담은 없다.
+    """
+    interval = int(os.getenv("RVP_JIRA_POLL_SEC", "10") or 0)
     if interval <= 0 or not os.getenv("JIRA_BASE_URL"):
         print("[jira_poll] 비활성 (RVP_JIRA_POLL_SEC=0 또는 JIRA_BASE_URL 없음)")
         return
@@ -346,7 +351,7 @@ def jira_sync_status():
     """폴러 상태 + 마지막 동기화 결과."""
     import jira_sync
     return {
-        "poll_interval_sec": int(os.getenv("RVP_JIRA_POLL_SEC", "30") or 0),
+        "poll_interval_sec": int(os.getenv("RVP_JIRA_POLL_SEC", "10") or 0),
         "running": bool(_JIRA_POLL["thread"] and _JIRA_POLL["thread"].is_alive()),
         "started_at": _JIRA_POLL["started_at"],
         "polls": _JIRA_POLL["polls"],
