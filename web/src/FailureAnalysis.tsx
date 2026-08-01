@@ -1,6 +1,8 @@
-import { useEffect, useMemo, useState, type PointerEvent as ReactPointerEvent } from "react";
+import { useEffect, useMemo, useRef, useState, type PointerEvent as ReactPointerEvent } from "react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
+import RelationGraph, { type GraphData } from "./RelationGraph";
+import FreshnessBadge from "./FreshnessBadge";
 
 const API = (import.meta as any).env?.VITE_API ?? "http://127.0.0.1:8001";
 
@@ -16,108 +18,12 @@ type Match = {
   lifecycle?: { state: string; superseded_by: string; freshness: number | null; fw_version: string; warnings: string[] };  // 수명주기(P2-5)
 };
 type Proposal = { root_cause: string; resolution: string; workaround: string; based_on: string; confidence: number };
-type RecoResp = { query: any; matches: Match[]; proposal: Proposal | null; coverage: boolean; explanation?: string; explanation_citations?: string[]; explanation_dropped_citations?: string[] };
-type GNode = { id: string; label: string; status: string; category: string; chip: string; template: string; center: boolean; relevance: number | null };
-type GEdge = { source: string; target: string; weight: number; same_template: boolean; rerank: number | null };
-type GraphData = { center: string | null; nodes: GNode[]; edges: GEdge[]; has_rerank?: boolean };
-
-const STATUS_HEX: Record<string, string> = {
-  "진행 중": "#10b981", "해야 할 일": "#94a3b8", "완료": "#3b82f6",
+type Gate = {
+  signal: string; passed: boolean;
+  rerank_top?: number; threshold?: number;
+  max_cos?: number; cos_threshold?: number; top_entity_overlap?: number;
 };
-
-// 이슈 관계 그래프 — center 중심. rerank 관련도를 노드 크기·선 굵기로 인코딩하고
-// 초기엔 관련도순 거리로 배치 후, 충돌 완화(겹침 제거)를 돌린다. 의존성 없는 인라인 SVG.
-function RelationGraph({ data, onSelect }: { data: GraphData; onSelect: (k: string) => void }) {
-  const W = 360, H = 360, CX = W / 2, CY = H / 2;
-  const RNEAR = 78, RFAR = 150, M = 36;            // M: 라벨용 가장자리 여백
-  const center = data.nodes.find((n) => n.center) ?? data.nodes[0];
-  const neigh = data.nodes.filter((n) => n !== center); // 백엔드에서 관련도 내림차순 정렬됨
-  const cid = center?.id;
-  const nodeR = (n: GNode) => (n.center ? 16 : 6 + (n.relevance ?? 0) * 8);
-
-  // 1) 초기 배치: 관련도↑ → center에 가깝게, 각도는 균등
-  const pos: Record<string, { x: number; y: number; r: number }> = {};
-  if (center) pos[center.id] = { x: CX, y: CY, r: 16 };
-  neigh.forEach((n, i) => {
-    const a = (2 * Math.PI * i) / Math.max(neigh.length, 1) - Math.PI / 2;
-    const rad = RFAR - (n.relevance ?? 0) * (RFAR - RNEAR);
-    pos[n.id] = { x: CX + rad * Math.cos(a), y: CY + rad * Math.sin(a), r: nodeR(n) };
-  });
-  // 2) 충돌 완화: 라벨 폭까지 고려한 최소 간격 확보(center는 고정). 결정론적.
-  const LABEL = 38;                                 // 'LSI-247' 라벨이 차지하는 반경 여유
-  for (let it = 0; it < 80; it++) {
-    for (let i = 0; i < neigh.length; i++) {
-      const A = pos[neigh[i].id];
-      // center에서 밀어내기
-      let dx = A.x - CX, dy = A.y - CY, d = Math.hypot(dx, dy) || 0.01;
-      const minC = A.r + 16 + 16;
-      if (d < minC) { A.x = CX + (dx / d) * minC; A.y = CY + (dy / d) * minC; }
-      // 다른 이웃과 분리
-      for (let j = i + 1; j < neigh.length; j++) {
-        const B = pos[neigh[j].id];
-        let ex = A.x - B.x, ey = A.y - B.y, e = Math.hypot(ex, ey) || 0.01;
-        const minD = A.r + B.r + LABEL;
-        if (e < minD) {
-          const push = (minD - e) / 2;
-          A.x += (ex / e) * push; A.y += (ey / e) * push;
-          B.x -= (ex / e) * push; B.y -= (ey / e) * push;
-        }
-      }
-      A.x = Math.max(M, Math.min(W - M, A.x));
-      A.y = Math.max(M, Math.min(H - M, A.y));
-    }
-  }
-  const shown = data.edges.filter((e) => e.source === cid || e.target === cid || e.same_template);
-  const relColor = (rel: number) => `rgb(${Math.round(99 + (1 - rel) * 130)},${Math.round(102 + (1 - rel) * 110)},241)`;
-  return (
-    <svg viewBox={`0 0 ${W} ${H}`} className="w-full" style={{ maxHeight: 360 }}>
-      <defs>
-        <filter id="nodeShadow" x="-50%" y="-50%" width="200%" height="200%">
-          <feDropShadow dx="0" dy="1" stdDeviation="1.2" floodColor="#1e293b" floodOpacity="0.22" />
-        </filter>
-      </defs>
-      {/* 엣지 */}
-      {shown.map((e, i) => {
-        const a = pos[e.source], b = pos[e.target]; if (!a || !b) return null;
-        const isCenter = e.rerank != null;
-        const rel = e.rerank ?? 0;
-        return (
-          <line key={i} x1={a.x} y1={a.y} x2={b.x} y2={b.y}
-            stroke={isCenter ? relColor(rel) : "#cbd5e1"}
-            strokeWidth={isCenter ? 1.2 + rel * 5 : 1}
-            strokeOpacity={isCenter ? 0.3 + rel * 0.55 : 0.4}
-            strokeLinecap="round">
-            {isCenter && <title>{`${e.source} ↔ ${e.target}\nrerank 관련도 ${Math.round(rel * 100)}%`}</title>}
-          </line>
-        );
-      })}
-      {/* 노드 */}
-      {data.nodes.map((n) => {
-        const p = pos[n.id]; if (!p) return null;
-        const sib = !n.center && n.template === center?.template; // 같은 근본원인 형제
-        return (
-          <g key={n.id} transform={`translate(${p.x},${p.y})`} className="cursor-pointer"
-            onClick={() => onSelect(n.id)}>
-            <title>{`${n.id} · ${n.status}${n.relevance != null ? ` · 관련도 ${Math.round(n.relevance * 100)}%` : ""}\n${n.label}`}</title>
-            {n.center && <circle r={p.r + 5} fill="none" stroke="#6366f1" strokeWidth={2} strokeOpacity={0.5} />}
-            {sib && <circle r={p.r + 3} fill="none" stroke="#6366f1" strokeWidth={1.5} strokeDasharray="2 2" />}
-            <circle r={p.r} fill={STATUS_HEX[n.status] ?? "#94a3b8"}
-              stroke="#fff" strokeWidth={1.8} filter="url(#nodeShadow)" />
-            {/* 노드 아래: Jira 이슈 ID (전체). 흰색 외곽선(halo)으로 엣지/노드 위에서도 또렷하게 */}
-            <text y={p.r + 13} textAnchor="middle" fontSize={11} fontWeight={700}
-              fill="#0f172a" stroke="#ffffff" strokeWidth={3.5} paintOrder="stroke"
-              strokeLinejoin="round" className="font-mono select-none">{n.id}</text>
-            {!n.center && n.relevance != null && (
-              <text y={p.r + 24} textAnchor="middle" fontSize={9} fontWeight={700}
-                fill="#4f46e5" stroke="#ffffff" strokeWidth={3} paintOrder="stroke"
-                strokeLinejoin="round" className="select-none">{Math.round(n.relevance * 100)}%</text>
-            )}
-          </g>
-        );
-      })}
-    </svg>
-  );
-}
+type RecoResp = { query: any; matches: Match[]; proposal: Proposal | null; coverage: boolean; gate?: Gate | null; explanation?: string; explanation_citations?: string[]; explanation_dropped_citations?: string[] };
 
 const CAT_COLOR: Record<string, string> = {
   Firmware: "bg-blue-100 text-blue-700", Thermal: "bg-red-100 text-red-700",
@@ -132,6 +38,51 @@ const pctText = (pct: number) =>
 
 const statusBadge = (s: string) =>
   s === "진행 중" ? "bg-emerald-500" : s === "해야 할 일" ? "bg-slate-400" : "bg-blue-500";
+
+/** Jira 원본으로 나가는 링크. base_url 은 /config/status 에서 받아 하드코딩하지 않는다. */
+function JiraLink({ base, issueKey, className = "" }: { base: string; issueKey: string; className?: string }) {
+  if (!base || !issueKey) return null;
+  return (
+    <a href={`${base.replace(/\/$/, "")}/browse/${encodeURIComponent(issueKey)}`}
+      target="_blank" rel="noreferrer"
+      onClick={(e) => e.stopPropagation()}
+      title={`Jira에서 ${issueKey} 열기 (새 탭)`}
+      className={`text-slate-400 hover:text-indigo-600 ${className}`}>↗</a>
+  );
+}
+
+/** 검색 대기 중 자리 표시 — /recommend 가 실측 700ms대라 텍스트 한 줄로는 체감이 나쁘다. */
+function MatchSkeleton() {
+  return (
+    <div className="space-y-3" aria-busy="true" aria-label="유사 사례 검색 중">
+      {[0, 1, 2].map((i) => (
+        <div key={i} className="bg-white rounded-xl border border-slate-200 p-4">
+          <div className="flex items-center gap-2">
+            <div className="h-3 w-16 rounded bg-slate-200 animate-pulse" />
+            <div className="h-3 w-20 rounded bg-slate-100 animate-pulse" />
+            <div className="h-3 w-14 rounded bg-slate-100 animate-pulse ml-auto" />
+          </div>
+          <div className="h-4 w-3/4 rounded bg-slate-100 animate-pulse mt-2.5" />
+          <div className="h-3 w-1/3 rounded bg-slate-100 animate-pulse mt-2" />
+        </div>
+      ))}
+    </div>
+  );
+}
+
+/** 게이트가 왜 막았는지를 수치로 보여준다 — "사례 없음"만 띄우면 신뢰가 안 생긴다. */
+function GateDetail({ gate }: { gate: Gate }) {
+  const rows = gate.signal === "rerank"
+    ? [["재순위 최고 관련도", gate.rerank_top], ["통과 임계", gate.threshold]]
+    : [["임베딩 최고 유사도", gate.max_cos], ["통과 임계", gate.cos_threshold],
+       ["기술 엔티티 겹침", gate.top_entity_overlap]];
+  return (
+    <div className="mt-2 text-[11px] text-amber-800/90">
+      <span className="font-semibold">판정 근거({gate.signal}):</span>{" "}
+      {rows.filter(([, v]) => v != null).map(([k, v]) => `${k} ${v}`).join(" · ")}
+    </div>
+  );
+}
 
 function Bar({ value }: { value: number }) {
   const pct = Math.round(value * 100);
@@ -156,11 +107,23 @@ function QNotice({ m }: { m: { sev: "ok" | "info" | "warn"; text: string } | nul
   return <div className={`mt-2 text-xs rounded-lg border px-2.5 py-1.5 leading-relaxed ${style}`}>{icon} {m.text}</div>;
 }
 
-export default function FailureAnalysis({ onQueueChange }: { onQueueChange?: () => void } = {}) {
+export default function FailureAnalysis({ onQueueChange, routeKey, onSelectKey, jiraBase = "" }: {
+  onQueueChange?: () => void;
+  /** URL(#/issue/LSI-7)에서 온 이슈 키 — 이 값이 바뀌면 해당 이슈를 자동으로 분석한다. */
+  routeKey?: string;
+  /** 선택이 바뀔 때 URL을 갱신하도록 부모에 알린다. */
+  onSelectKey?: (key: string) => void;
+  /** Jira base URL (/config/status) — 원본 링크 생성용. */
+  jiraBase?: string;
+} = {}) {
   const [stats, setStats] = useState<any>(null);
   const [issues, setIssues] = useState<Issue[]>([]);
   const [q, setQ] = useState("");
   const [cat, setCat] = useState<string>("");
+  const [chip, setChip] = useState<string>("");
+  const [statusF, setStatusF] = useState<string>("");
+  const searchRef = useRef<HTMLInputElement | null>(null);
+  const [showKeys, setShowKeys] = useState(false);
   const [sel, setSel] = useState<Issue | null>(null);
   const [reco, setReco] = useState<RecoResp | null>(null);
   const [loading, setLoading] = useState(false);
@@ -206,14 +169,20 @@ export default function FailureAnalysis({ onQueueChange }: { onQueueChange?: () 
   }, [sel?.key]);
 
   const cats = useMemo(() => Array.from(new Set(issues.map((i) => i.category))).sort(), [issues]);
+  const chips = useMemo(() => Array.from(new Set(issues.map((i) => i.chip).filter(Boolean))).sort(), [issues]);
+  const statuses = useMemo(() => Array.from(new Set(issues.map((i) => i.status).filter(Boolean))).sort(), [issues]);
   const filtered = useMemo(
     () => issues.filter((i) =>
       (!cat || i.category === cat) &&
-      (!q || (i.key + i.summary + i.chip).toLowerCase().includes(q.toLowerCase()))),
-    [issues, q, cat]);
+      (!chip || i.chip === chip) &&
+      (!statusF || i.status === statusF) &&
+      (!q || (i.key + i.summary + i.chip + i.symptom).toLowerCase().includes(q.toLowerCase()))),
+    [issues, q, cat, chip, statusF]);
+  const filterOn = !!(cat || chip || statusF || q);
 
   const select = async (issue: Issue) => {
     setSel(issue); setReco(null); setErr(""); setLoading(true);
+    onSelectKey?.(issue.key);          // URL 동기화 — 새로고침·공유 가능하게
     try {
       const r = await fetch(`${API}/recommend`, {
         method: "POST", headers: { "Content-Type": "application/json" },
@@ -342,6 +311,7 @@ export default function FailureAnalysis({ onQueueChange }: { onQueueChange?: () 
     }
     // 미해결 목록에 없는 키(해결 이슈 등)는 백엔드 by_key로 직접 조회
     setSel(null); setReco(null); setLoading(true);
+    onSelectKey?.(key);
     try {
       const r = await fetch(`${API}/recommend`, {
         method: "POST", headers: { "Content-Type": "application/json" },
@@ -361,20 +331,85 @@ export default function FailureAnalysis({ onQueueChange }: { onQueueChange?: () 
     } finally { setLoading(false); }
   };
 
+  // URL(#/issue/LSI-7)에서 온 키를 반영 — 새로고침·뒤로가기·대시보드 드릴다운의 진입점.
+  // goKeyRef 로 최신 클로저를 참조해, issues 로드 전에 들어온 키도 목록이 준비되면 처리한다.
+  const goKeyRef = useRef(goKey);
+  useEffect(() => { goKeyRef.current = goKey; });
+  const lastRouteKey = useRef<string | undefined>(undefined);
+  useEffect(() => {
+    if (!routeKey || routeKey === lastRouteKey.current) return;
+    lastRouteKey.current = routeKey;
+    goKeyRef.current(routeKey);
+  }, [routeKey, issues.length]);
+
+  // 전역 단축키는 '/'(검색)와 '?'(도움말)·Esc 만. ↑/↓ 는 전역으로 잡지 않는다 —
+  // 전역으로 가로채면 본문을 스크롤하려고 누른 화살표가 이슈 선택을 바꾸고
+  // /recommend 요청까지 발사한다(실측으로 확인). 목록 이동은 아래 listKeyDown 담당.
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      const t = e.target as HTMLElement | null;
+      const typing = !!t && (t.tagName === "INPUT" || t.tagName === "TEXTAREA" || t.isContentEditable);
+      if (e.key === "Escape") {
+        if (typing) t.blur();
+        setShowKeys(false);
+        return;
+      }
+      if (typing) return;
+      if (e.key === "/") { e.preventDefault(); searchRef.current?.focus(); }
+      else if (e.key === "?") { e.preventDefault(); setShowKeys((v) => !v); }
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, []);
+
+  // 이슈 목록(또는 검색창) 안에서의 ↑/↓ — 여기서만 선택을 옮긴다.
+  const listKeyDown = (e: React.KeyboardEvent) => {
+    if (e.key !== "ArrowDown" && e.key !== "ArrowUp") return;
+    if (!filtered.length) return;
+    e.preventDefault();
+    const cur = filtered.findIndex((i) => i.key === sel?.key);
+    const next = e.key === "ArrowDown"
+      ? Math.min(filtered.length - 1, cur < 0 ? 0 : cur + 1)
+      : Math.max(0, cur < 0 ? 0 : cur - 1);
+    select(filtered[next]);
+  };
+
   return (
     <div className="h-full flex bg-slate-50 text-slate-900">
+      {showKeys && (
+        <div className="fixed inset-0 z-50 bg-slate-900/40 flex items-center justify-center"
+          onClick={() => setShowKeys(false)}>
+          <div className="bg-white rounded-xl p-5 w-80 shadow-xl" onClick={(e) => e.stopPropagation()}>
+            <div className="font-semibold text-slate-800 mb-3">키보드 단축키</div>
+            <dl className="text-sm space-y-1.5">
+              {[["/", "이슈 검색으로 이동"], ["↑ / ↓", "이슈 목록 안에서 위·아래 선택"],
+                ["Enter", "입력한 Jira 번호 분석"], ["Esc", "입력 해제 / 창 닫기"],
+                ["?", "이 도움말 열고 닫기"]].map(([k, v]) => (
+                <div key={k} className="flex gap-3">
+                  <dt className="font-mono text-xs bg-slate-100 rounded px-1.5 py-0.5 shrink-0 w-16 text-center">{k}</dt>
+                  <dd className="text-slate-600">{v}</dd>
+                </div>
+              ))}
+            </dl>
+          </div>
+        </div>
+      )}
       {/* 좌: 미해결 이슈 목록 (너비 조정 + 접기) */}
       {leftOpen ? (
-      <aside style={{ width: leftW }} className="shrink-0 border-r border-slate-200 bg-white flex flex-col">
+      <aside style={{ width: leftW }} onKeyDown={listKeyDown}
+        className="shrink-0 border-r border-slate-200 bg-white flex flex-col">
         <div className="p-4 border-b border-slate-200">
           <div className="flex items-center justify-between mb-2">
-            <div className="text-xs font-semibold text-slate-500">미해결 이슈 {issues.length}건</div>
+            <div className="text-xs font-semibold text-slate-500">
+              미해결 이슈 {filterOn ? `${filtered.length} / ${issues.length}` : `${issues.length}`}건
+            </div>
             <button onClick={() => setLeftOpen(false)} title="목록 접기"
               className="text-slate-400 hover:text-indigo-600 px-1 leading-none">◀</button>
           </div>
           <input
+            ref={searchRef}
             value={q} onChange={(e) => setQ(e.target.value)}
-            placeholder="이슈 검색 (키/칩/증상)"
+            placeholder="이슈 검색 (키/칩/증상)  —  '/' 키"
             className="w-full px-3 py-2 text-sm rounded-lg border border-slate-300 focus:border-indigo-500 focus:outline-none"
           />
           <div className="flex flex-wrap gap-1 mt-2">
@@ -385,18 +420,48 @@ export default function FailureAnalysis({ onQueueChange }: { onQueueChange?: () 
                 className={`text-xs px-2 py-0.5 rounded-full ${c === cat ? "bg-indigo-600 text-white" : "bg-slate-100 text-slate-600"}`}>{c}</button>
             ))}
           </div>
+          {/* 칩·상태 필터 — 264건 코퍼스에서 분류만으로는 좁혀지지 않는다 */}
+          <div className="flex gap-1.5 mt-2">
+            <select value={chip} onChange={(e) => setChip(e.target.value)} aria-label="칩 필터"
+              className="flex-1 min-w-0 text-xs px-2 py-1 rounded border border-slate-300 bg-white text-slate-600">
+              <option value="">모든 칩</option>
+              {chips.map((c) => <option key={c} value={c}>{c}</option>)}
+            </select>
+            <select value={statusF} onChange={(e) => setStatusF(e.target.value)} aria-label="상태 필터"
+              className="flex-1 min-w-0 text-xs px-2 py-1 rounded border border-slate-300 bg-white text-slate-600">
+              <option value="">모든 상태</option>
+              {statuses.map((s) => <option key={s} value={s}>{s}</option>)}
+            </select>
+          </div>
+          {filterOn && (
+            <button onClick={() => { setCat(""); setChip(""); setStatusF(""); setQ(""); }}
+              className="mt-1.5 text-[11px] text-slate-500 hover:text-indigo-600 underline">필터 초기화</button>
+          )}
         </div>
         <div className="flex-1 overflow-y-auto">
+          {filtered.length === 0 && (
+            <div className="p-6 text-center text-xs text-slate-400">
+              조건에 맞는 이슈가 없습니다.
+              {filterOn && (
+                <button onClick={() => { setCat(""); setChip(""); setStatusF(""); setQ(""); }}
+                  className="block mx-auto mt-2 text-indigo-600 hover:underline">필터 초기화</button>
+              )}
+            </div>
+          )}
           {filtered.map((i) => (
-            <button key={i.key} onClick={() => select(i)}
-              className={`w-full text-left px-4 py-3 border-b border-slate-100 hover:bg-indigo-50 transition ${sel?.key === i.key ? "bg-indigo-50" : ""}`}>
-              <div className="flex items-center gap-2">
-                <span className={`w-2 h-2 rounded-full ${statusBadge(i.status)}`} />
-                <span className="font-mono text-xs text-slate-500">{i.key}</span>
-                <span className={`text-[10px] px-1.5 py-0.5 rounded ${CAT_COLOR[i.category] ?? "bg-slate-100 text-slate-600"}`}>{i.category}</span>
-              </div>
-              <div className="text-sm mt-1 leading-snug line-clamp-2">{i.summary}</div>
-            </button>
+            <div key={i.key}
+              className={`group flex items-start border-b border-slate-100 hover:bg-indigo-50 transition ${sel?.key === i.key ? "bg-indigo-50" : ""}`}>
+              <button onClick={() => select(i)} className="flex-1 min-w-0 text-left px-4 py-3">
+                <div className="flex items-center gap-2">
+                  <span className={`w-2 h-2 rounded-full ${statusBadge(i.status)}`} />
+                  <span className="font-mono text-xs text-slate-500">{i.key}</span>
+                  <span className={`text-[10px] px-1.5 py-0.5 rounded ${CAT_COLOR[i.category] ?? "bg-slate-100 text-slate-600"}`}>{i.category}</span>
+                </div>
+                <div className="text-sm mt-1 leading-snug line-clamp-2">{i.summary}</div>
+              </button>
+              <JiraLink base={jiraBase} issueKey={i.key}
+                className="px-2 py-3 opacity-0 group-hover:opacity-100 focus:opacity-100 shrink-0" />
+            </div>
           ))}
         </div>
       </aside>
@@ -425,6 +490,12 @@ export default function FailureAnalysis({ onQueueChange }: { onQueueChange?: () 
               <span className="bg-white/15 rounded px-2 py-1">고장 템플릿 {stats.templates}종</span>
               <span className="bg-white/15 rounded px-2 py-1">미해결 {stats.unresolved}건</span>
               <span className="bg-white/15 rounded px-2 py-1">검색정확도 P@1 1.0</span>
+              <FreshnessBadge onSynced={() => {
+                // Jira에 변경이 있었으면 목록·통계를 다시 읽어 화면을 최신으로 맞춘다.
+                fetch(`${API}/issues/unresolved`).then((r) => r.json())
+                  .then((d) => setIssues(d.issues ?? [])).catch(() => {});
+                fetch(`${API}/reco/stats`).then((r) => r.json()).then(setStats).catch(() => {});
+              }} />
             </div>
           )}
           <form
@@ -463,18 +534,52 @@ export default function FailureAnalysis({ onQueueChange }: { onQueueChange?: () 
                 <span className="text-xs text-slate-500">{sel.status}</span>
                 <span className={`text-xs px-2 py-0.5 rounded ${CAT_COLOR[sel.category] ?? "bg-slate-100"}`}>{sel.category}</span>
                 <span className="text-xs px-2 py-0.5 rounded bg-slate-100 text-slate-600">{sel.chip}</span>
+                <JiraLink base={jiraBase} issueKey={sel.key} className="text-base leading-none" />
               </div>
               <h2 className="font-semibold text-lg leading-snug">{sel.summary}</h2>
               <p className="text-sm text-slate-600 mt-2">{sel.symptom}</p>
             </section>
 
-            {loading && <div className="text-slate-400 text-sm">유사 사례 검색 중…</div>}
+            {loading && (
+              <div>
+                <div className="text-slate-400 text-sm mb-3">유사 사례 검색 중…</div>
+                <MatchSkeleton />
+              </div>
+            )}
 
             {reco && !loading && (
               <>
                 {!reco.coverage ? (
                   <div className="bg-amber-50 border border-amber-200 rounded-xl p-5 text-amber-800 text-sm">
-                    ⚠️ 유사한 과거 해결 사례를 찾지 못했습니다. 이 고장 유형은 처음 보고된 것일 수 있어 시니어 검토가 필요합니다.
+                    <div className="font-semibold">⚠️ 유사한 과거 해결 사례를 찾지 못했습니다.</div>
+                    <p className="mt-1 leading-relaxed">
+                      이 고장 유형은 처음 보고된 것일 수 있습니다. 근거 없는 추측을 막기 위해
+                      AI 제안·심층 분석을 생성하지 않았습니다 — <b>시니어 검토가 필요합니다.</b>
+                    </p>
+                    {reco.gate && <GateDetail gate={reco.gate} />}
+                    <div className="mt-3 pt-2 border-t border-amber-200 text-[11px] text-amber-800/90">
+                      이 질의는 <b>지식 공백</b>으로 기록되어 어떤 고장 유형의 사례가 부족한지 집계됩니다
+                      (지식 현황 → 지식 공백).
+                      {reco.matches.length > 0 && (
+                        <> 참고용 하위 후보 {reco.matches.length}건은 아래에 접어 두었습니다.</>
+                      )}
+                    </div>
+                    {reco.matches.length > 0 && (
+                      <details className="mt-2">
+                        <summary className="cursor-pointer text-[11px] text-amber-900 hover:underline">
+                          참고용 후보 {reco.matches.length}건 보기 (게이트 미통과 — 근거로 쓰지 마세요)
+                        </summary>
+                        <div className="mt-2 space-y-1">
+                          {reco.matches.map((m) => (
+                            <div key={m.key} className="text-[11px] flex items-center gap-2">
+                              <button onClick={() => goKey(m.key)}
+                                className="font-mono text-indigo-600 hover:underline shrink-0">{m.key}</button>
+                              <span className="text-slate-600 truncate">{m.summary}</span>
+                            </div>
+                          ))}
+                        </div>
+                      </details>
+                    )}
                   </div>
                 ) : (
                   <>
@@ -570,7 +675,9 @@ export default function FailureAnalysis({ onQueueChange }: { onQueueChange?: () 
                         {reco.matches.map((m, mi) => (
                           <div key={m.key} className="bg-white rounded-xl border border-slate-200 p-4">
                             <div className="flex items-center gap-2 mb-1">
-                              <span className="font-mono text-xs text-indigo-600 font-semibold">{m.key}</span>
+                              <button onClick={() => goKey(m.key)} title="이 사례를 분석 화면에서 열기"
+                                className="font-mono text-xs text-indigo-600 font-semibold hover:underline">{m.key}</button>
+                              <JiraLink base={jiraBase} issueKey={m.key} />
                               <span className={`text-[10px] px-1.5 py-0.5 rounded ${CAT_COLOR[m.category] ?? "bg-slate-100"}`}>{m.category}</span>
                               <span className="text-[10px] px-1.5 py-0.5 rounded bg-slate-100 text-slate-500">{m.chip}</span>
                               {m.verified && (
