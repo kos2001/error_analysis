@@ -1,4 +1,5 @@
 import { useState } from "react";
+import UserAdmin from "./UserAdmin.tsx";
 
 const API = (import.meta as any).env?.VITE_API ?? "";   // 빈 값 = 같은 오리진(개발은 vite 프록시)
 
@@ -22,7 +23,14 @@ function TestBadge({ r }: { r: TestResult }) {
     : <div className="text-xs text-red-400 bg-red-950/40 rounded px-2 py-1">✗ {r.error || "실패"}</div>;
 }
 
-export default function Onboarding({ status, onDone }: { status: any; onDone: () => void }) {
+export default function Onboarding({ status, onDone, myEmail = "", authReady = false }: {
+  status: any;
+  onDone: () => void;
+  /** 로그인한 관리자 본인 — 자기 계정 회수를 막기 위해 넘긴다. */
+  myEmail?: string;
+  /** LLM·Jira 설정이 이미 끝났는지. 초기 설정 중이면 사용자 관리는 뒤로 미룬다. */
+  authReady?: boolean;
+}) {
   const h = status?.llm ?? {}, j = status?.jira ?? {};
   // LLM 게이트웨이 (OpenRouter / agno)
   const [gatewayUrl, setGatewayUrl] = useState<string>(h.gateway_url ?? "https://openrouter.ai/api/v1");
@@ -74,8 +82,10 @@ export default function Onboarding({ status, onDone }: { status: any; onDone: ()
     <div className="h-full overflow-y-auto bg-zinc-800">
       <div className="max-w-2xl mx-auto p-6 sm:p-10">
         <div className="text-center mb-6">
-          <h1 className="text-2xl font-bold text-zinc-100">초기 설정</h1>
-          <p className="text-sm text-zinc-400 mt-1">서비스를 시작하려면 아래 두 가지 연동을 설정하세요.</p>
+          <h1 className="text-2xl font-semibold tracking-tight text-zinc-50">{authReady ? "설정" : "초기 설정"}</h1>
+          <p className="mt-1.5 text-sm text-zinc-300">
+            {authReady ? "연동과 사용자 권한을 관리합니다." : "서비스를 시작하려면 아래 두 가지 연동을 설정하세요."}
+          </p>
         </div>
 
         {/* LLM 게이트웨이 (OpenRouter) */}
@@ -139,6 +149,11 @@ export default function Onboarding({ status, onDone }: { status: any; onDone: ()
           {saving ? "저장 중…" : "저장하고 시작하기"}
         </button>
         <p className="text-center text-[11px] text-zinc-400 mt-2">설정은 서버에 안전하게 저장되며, 다음 실행부터 이 화면은 생략됩니다.</p>
+
+        {/* 사용자 관리 — 초기 설정을 끝낸 뒤에 보여 준다(한 화면에 할 일이 겹치지 않게) */}
+        <div className="mt-8">
+          <UserAdmin myEmail={myEmail} />
+        </div>
       </div>
     </div>
   );

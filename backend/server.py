@@ -31,6 +31,7 @@ import app_config  # noqa: E402
 import auth  # noqa: E402
 import oidc_sso  # noqa: E402
 import session  # noqa: E402
+import user_store  # noqa: E402
 from json_store import read_json, write_json_atomic  # noqa: E402
 from llm_headers import custom_headers  # noqa: E402  사내 게이트웨이 x-service-id/x-user-id
 
@@ -364,6 +365,58 @@ def auth_reload(_u: auth.User = Depends(require("config.write"))):
     """users.yaml 을 다시 읽는다 — 사용자 추가 후 재기동하지 않기 위함."""
     _reload_users()
     return {"ok": True, **auth.auth_status(_users())}
+
+
+# ---------------------------------------------------------------------------
+# 사용자 관리 (관리자 전용) — 설정 화면의 "사용자 관리"
+#
+# 목록을 고친 뒤에는 곧바로 다시 읽는다(_reload_users). 그러지 않으면 방금 등록한
+# 사람이 다음 재기동까지 로그인하지 못한다.
+# ---------------------------------------------------------------------------
+class UserUpsertBody(BaseModel):
+    email: str
+    name: str = ""
+    role: str = "user"
+
+
+class UserRevokeBody(BaseModel):
+    email: str
+    revoked: bool = True
+
+
+@app.get("/auth/users")
+def auth_users(_u: auth.User = Depends(require("config.write"))):
+    try:
+        return user_store.listing()
+    except user_store.UserStoreError as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/auth/users")
+def auth_users_upsert(body: UserUpsertBody,
+                      u: auth.User = Depends(require("config.write"))):
+    """사용자·관리자 등록(또는 역할 변경). 회수 상태였다면 함께 복구된다."""
+    try:
+        out = user_store.upsert(body.email, body.name, body.role, actor=u.email or u.subject)
+    except user_store.UserStoreError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    _reload_users()
+    return {"ok": True, **out, "auth": auth.auth_status(_users())}
+
+
+@app.post("/auth/users/revoke")
+def auth_users_revoke(body: UserRevokeBody,
+                      u: auth.User = Depends(require("config.write"))):
+    """권한 회수/복구. 자기 자신을 회수하는 것은 막는다 — 실수로 잠기는 경로다."""
+    if auth.normalize_email(body.email) == auth.normalize_email(u.email) and body.revoked:
+        raise HTTPException(status_code=400,
+                            detail="자기 자신의 권한은 회수할 수 없습니다 — 다른 관리자에게 요청하세요.")
+    try:
+        out = user_store.revoke(body.email, body.revoked, actor=u.email or u.subject)
+    except user_store.UserStoreError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    _reload_users()
+    return {"ok": True, **out, "auth": auth.auth_status(_users())}
 
 
 @app.get("/health")

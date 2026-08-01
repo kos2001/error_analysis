@@ -30,8 +30,10 @@ function Shell() {
   // 화면 상태를 URL 해시로 옮겼다 — 새로고침·뒤로가기·링크 공유가 동작하고,
   // 대시보드에서 이슈로 바로 들어오는 드릴다운도 같은 경로를 쓴다.
   const [route, go] = useRoute();
-  const load = () => fetch(`${API}/config/status`).then((r) => r.json())
-    .then((s) => { setStatus(s); if (route.view === "settings") go({ view: "app" }, false); })
+  // closeSettings 는 "설정 저장이 끝났으니 설정 화면을 닫아라" 는 뜻이다.
+  // 기본값을 false 로 둔다 — 초기 로드에서도 닫으면 #/settings 로 직접 들어올 수 없다.
+  const load = (closeSettings = false) => fetch(`${API}/config/status`).then((r) => r.json())
+    .then((s) => { setStatus(s); if (closeSettings && route.view === "settings") go({ view: "app" }, false); })
     .catch(() => setStatus({ ready: false, _err: true }));
   const loadPending = () => fetch(`${API}/rca/pending`).then((r) => r.json())
     .then((d) => setPending(d.counts?.pending ?? 0)).catch(() => {});
@@ -103,7 +105,7 @@ function Shell() {
         ) : status === undefined ? (
           <div className="h-full flex items-center justify-center text-zinc-400 text-sm">설정 확인 중…</div>
         ) : showOnboarding ? (
-          <Onboarding status={status} onDone={load} />
+          <Onboarding status={status} onDone={() => load(true)} myEmail={me?.email ?? ""} authReady={!!status?.ready} />
         ) : route.view === "rca" ? (
           <RcaQueue onBack={() => { go({ view: "app" }); loadPending(); }} onChange={loadPending} />
         ) : route.view === "voc" ? (
