@@ -232,7 +232,9 @@ def current_user(request: Request) -> auth.User | None:
     tok = request.cookies.get(session.COOKIE_NAME, "")
     body = session.verify(tok) if tok else None
     if body:
-        u = auth.resolve_email(users, str(body.get("email", "")), via=str(body.get("via", "oidc")))
+        # sub 가 정식 키. email 은 이전 형식(아이디 계정은 email 이 비어 있어 쓸 수 없다).
+        ident = str(body.get("sub") or body.get("email") or "")
+        u = auth.resolve_email(users, ident, via=str(body.get("via", "oidc")))
         if u is not None:
             return u                          # 쿠키가 있어도 인가 목록이 기준이다
     email = _proxy_email(request)
@@ -321,7 +323,7 @@ def auth_callback(code: str = "", state: str = "", error: str = "",
     resp = RedirectResponse(dest, status_code=302)
     # IdP 토큰은 담지 않는다 — 검증 결과(이메일)만 남긴다.
     resp.set_cookie(session.COOKIE_NAME,
-                    session.issue({"email": u.email, "via": "oidc"}),
+                    session.issue({"sub": u.subject, "via": "oidc"}),
                     **session.cookie_kwargs())
     print(f"[auth] 로그인 {u.email} · 역할 {u.role} · via oidc")
     return resp
@@ -344,11 +346,11 @@ def auth_dev_login(body: DevLoginBody, response: Response):
     if users is None:
         raise HTTPException(status_code=400,
                             detail="인가 목록이 없어 인증이 비활성 상태입니다(이미 전체 권한)")
-    u = users.get(auth.normalize_email(body.email))
+    u = users.get(auth.normalize_id(body.email))
     if u is None:
         raise HTTPException(status_code=403, detail="인가 목록에 없는 이메일입니다")
     response.set_cookie(session.COOKIE_NAME,
-                        session.issue({"email": u.email, "via": "dev"}),
+                        session.issue({"sub": u.subject, "via": "dev"}),
                         **session.cookie_kwargs())
     print(f"[auth] 개발 로그인 {u.email} · 역할 {u.role}")
     return {**u.public(), "via": "dev"}
@@ -408,7 +410,7 @@ def auth_users_upsert(body: UserUpsertBody,
 def auth_users_revoke(body: UserRevokeBody,
                       u: auth.User = Depends(require("config.write"))):
     """권한 회수/복구. 자기 자신을 회수하는 것은 막는다 — 실수로 잠기는 경로다."""
-    if auth.normalize_email(body.email) == auth.normalize_email(u.email) and body.revoked:
+    if auth.normalize_id(body.email) == auth.normalize_id(u.subject) and body.revoked:
         raise HTTPException(status_code=400,
                             detail="자기 자신의 권한은 회수할 수 없습니다 — 다른 관리자에게 요청하세요.")
     try:

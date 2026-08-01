@@ -29,10 +29,11 @@ os.environ.update({
 })
 (ROOT / "tests" / "_users_test.yaml").write_text(
     "users:\n"
-    "  - email: boss@example.com\n    name: 관리자\n    role: admin\n"
-    "  - email: eng@example.com\n    name: 사용자\n    role: user\n"
-    "  - email: gone@example.com\n    name: 폐기\n    role: admin\n    revoked: true\n"
-    "  - email: typo@example.com\n    name: 오타역할\n    role: manger\n",
+    "  - id: admin\n    name: 관리자\n    role: admin\n"
+    "  - email: boss@example.com\n    name: 관리자2\n    role: admin\n"   # 이전 email 키 하위호환
+    "  - id: eng@example.com\n    name: 사용자\n    role: user\n"
+    "  - id: gone@example.com\n    name: 폐기\n    role: admin\n    revoked: true\n"
+    "  - id: typo@example.com\n    name: 오타역할\n    role: manger\n",
     encoding="utf-8")
 
 import auth  # noqa: E402
@@ -51,11 +52,13 @@ def check(name: str, cond: bool, detail: str = "") -> None:
 def test_users_file() -> None:
     print("\n[인가 목록]")
     users = auth.load_users()
-    check("관리자 로드", users["boss@example.com"].role == "admin")
+    check("아이디(admin) 계정 로드", users["admin"].role == "admin")
+    check("아이디 계정은 email 이 비어 있다", users["admin"].email == "")
+    check("이전 email 키 하위호환", users["boss@example.com"].role == "admin")
     check("사용자 로드", users["eng@example.com"].role == "user")
     check("revoked 항목 제외", "gone@example.com" not in users)
     check("알 수 없는 역할 항목 제외", "typo@example.com" not in users)
-    check("이메일 대소문자 정규화", auth.normalize_email(" Boss@Example.COM ") == "boss@example.com")
+    check("식별자 대소문자·공백 정규화", auth.normalize_id(" Admin ") == "admin")
 
 
 def test_capabilities() -> None:
@@ -89,8 +92,28 @@ def test_session() -> None:
     check("키 복구 후 재검증", session.verify(tok) is not None)
 
 
+def test_domains() -> None:
+    print("\n[자동 등록 도메인 제한]")
+    os.environ["RVP_ALLOWED_EMAIL_DOMAINS"] = "samsung.com"
+    check("사내 도메인 허용", auth.domain_allowed("hong@samsung.com"))
+    check("사내 서브도메인 허용", auth.domain_allowed("a@sec.samsung.com"))
+    check("유사 도메인 차단", not auth.domain_allowed("x@evil-samsung.com"))
+    check("외부 도메인 차단", not auth.domain_allowed("x@gmail.com"))
+    check("도메인 제한 시 아이디 자동등록 차단", not auth.domain_allowed("admin"))
+    users = auth.load_users()
+    check("목록에 있으면 도메인 제한과 무관",
+          auth.resolve_email(users, "admin", "dev") is not None)
+    check("목록 밖 외부 도메인은 자동 등록 거부",
+          auth.resolve_email(users, "outsider@gmail.com", "oidc") is None)
+    check("목록 밖 사내 도메인은 기본역할로 허용",
+          (auth.resolve_email(users, "newbie@samsung.com", "oidc") or auth.User("", "", "x")).role == "user")
+    os.environ.pop("RVP_ALLOWED_EMAIL_DOMAINS")
+    check("제한 없으면 외부도 기본역할",
+          auth.resolve_email(users, "outsider@gmail.com", "oidc") is not None)
+
+
 def test_resolve() -> None:
-    print("\n[이메일 → 신원]")
+    print("\n[식별자 → 신원]")
     users = auth.load_users()
     check("관리자 매핑", auth.resolve_email(users, "BOSS@example.com", "oidc").role == "admin")
     check("목록 밖은 기본역할(user)", auth.resolve_email(users, "new@example.com", "oidc").role == "user")
@@ -144,6 +167,17 @@ def test_endpoints() -> None:
             r = fn(path, json=body) if body is not None else fn(path)
             check(f"사용자 {method.upper()} {path} → 403", r.status_code == 403,
                   f"실제 {r.status_code}")
+
+        # 아이디 계정(admin) — 이메일이 없는 신원도 세션이 유지돼야 한다.
+        # 예전에는 세션에 email 을 담아서, 이메일 없는 계정은 로그인 직후 401 이 났다.
+        r = c.post("/auth/dev-login", json={"email": "admin"})
+        check("아이디(admin) 로그인 성공", r.status_code == 200 and r.json()["role"] == "admin")
+        me = c.get("/auth/me")
+        check("아이디 계정 세션 유지", me.status_code == 200 and me.json()["subject"] == "admin",
+              f"실제 {me.status_code}")
+        check("아이디 계정으로 관리자 기능 접근", c.get("/voc").status_code == 200)
+        check("아이디 계정 대문자 입력도 동일 계정",
+              c.post("/auth/dev-login", json={"email": " ADMIN "}).status_code == 200)
 
         # 관리자 로그인
         r = c.post("/auth/dev-login", json={"email": "boss@example.com"})
@@ -206,6 +240,7 @@ if __name__ == "__main__":
     test_capabilities()
     test_session()
     test_resolve()
+    test_domains()
     test_endpoints()
     test_auth_disabled()
     print(f"\n{'=' * 56}")

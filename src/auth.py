@@ -11,6 +11,11 @@
 `require("rca.approve")` 처럼 필요한 기능을 선언하고, 역할→기능 표는 여기 한 곳에만
 둔다. 역할이 늘어나도 엔드포인트를 고치지 않는다.
 
+신원(id)은 **이메일 또는 아이디**다. SSO(IdP)가 주는 것은 이메일이므로 SSO 로 들어오는
+계정은 이메일 id 를 쓰고, `admin` 같은 로컬 아이디는 프록시 헤더나 개발용 로그인처럼
+IdP 를 거치지 않는 경로에서 쓴다(IdP 가 그 값을 이메일 클레임으로 주지 않는 한
+OIDC 로는 로그인되지 않는다 — 로컬 운영 계정용이다).
+
 인가 대상 목록은 `data/users.yaml`(또는 RVP_USERS_FILE)이다. 파일이 없으면
 **인증 비활성**(전체 권한) — 기존 로컬 개발 흐름을 깨지 않기 위한 것이고, 운영에서는
 파일이나 RVP_ADMIN_EMAILS 를 반드시 둔다. 상태는 `/auth/config` 로 노출해
@@ -63,7 +68,7 @@ ALL_CAPABILITIES = CAPABILITIES["admin"]
 
 @dataclass(frozen=True)
 class User:
-    """인증된 신원 + 역할. subject 는 안정 식별자(이메일 소문자)."""
+    """인증된 신원 + 역할. subject 는 안정 식별자(이메일 또는 아이디, 소문자)."""
     subject: str
     name: str
     role: str
@@ -84,8 +89,17 @@ class User:
 ALL_ACCESS = User(subject="", name="(인증 비활성)", role="admin", via="disabled")
 
 
-def normalize_email(email: str) -> str:
-    return (email or "").strip().lower()
+def normalize_id(value: str) -> str:
+    """식별자 정규화 — 공백 제거 + 소문자. 이메일과 아이디 모두 같은 규칙."""
+    return (value or "").strip().lower()
+
+
+# 이전 이름 — 호출부가 남아 있어 별칭으로 유지한다.
+normalize_email = normalize_id
+
+
+def is_email(value: str) -> bool:
+    return "@" in (value or "")
 
 
 def _users_path() -> Path:
@@ -108,6 +122,27 @@ def _default_role() -> str | None:
     return r if r in CAPABILITIES else None
 
 
+def allowed_domains() -> set[str]:
+    """자동 등록을 허용할 이메일 도메인. 비면 제한 없음.
+
+    사내 도메인이 `xxx.samsung.com` 형태이므로 서브도메인까지 인정한다
+    (`samsung.com` 을 넣으면 `sec.samsung.com` 도 통과).
+    """
+    raw = os.getenv("RVP_ALLOWED_EMAIL_DOMAINS", "")
+    return {d.strip().lower().lstrip("@") for d in raw.replace(";", ",").split(",") if d.strip()}
+
+
+def domain_allowed(ident: str) -> bool:
+    """목록에 없는 신원을 기본역할로 받아 줄지. 명시적으로 등록된 계정에는 적용 안 함."""
+    doms = allowed_domains()
+    if not doms:
+        return True
+    if not is_email(ident):
+        return False                 # 도메인 제한이 켜졌으면 아이디 계정은 자동 등록 불가
+    host = ident.rsplit("@", 1)[-1]
+    return any(host == d or host.endswith("." + d) for d in doms)
+
+
 def load_users() -> dict[str, User] | None:
     """email → User. 목록이 아예 없으면 None(인증 비활성).
 
@@ -126,32 +161,34 @@ def load_users() -> dict[str, User] | None:
         for item in (raw.get("users") or []):
             if item.get("revoked"):
                 continue                      # 폐기 항목은 파일에 남겨 이력이 보이게 한다
-            email = normalize_email(str(item.get("email") or ""))
-            if not email:
+            # id 가 정식 키이고 email 은 이전 형식 — 둘 다 받는다.
+            ident = normalize_id(str(item.get("id") or item.get("email") or ""))
+            if not ident:
                 continue
             role = str(item.get("role") or "").strip().lower()
             if role not in CAPABILITIES:
                 # 오타 하나로 서비스가 죽거나(KeyError) 의도 없이 권한이 생기는 것을
                 # 둘 다 막는다 — 항목을 버리고 알린다.
-                log.warning("users.yaml 항목 무시: 알 수 없는 역할 %r (email=%s). 허용: %s",
-                            role, email, ", ".join(sorted(CAPABILITIES)))
+                log.warning("users.yaml 항목 무시: 알 수 없는 역할 %r (id=%s). 허용: %s",
+                            role, ident, ", ".join(sorted(CAPABILITIES)))
                 continue
-            users[email] = User(subject=email, name=str(item.get("name") or email),
-                                role=role, email=email)
-    for email in _admin_emails():
+            users[ident] = User(subject=ident, name=str(item.get("name") or ident),
+                                role=role, email=ident if is_email(ident) else "")
+    for ident in _admin_emails():
         # 환경변수 관리자는 파일보다 우선 — 잠금 해제 경로로 쓸 수 있어야 한다.
-        users[email] = User(subject=email, name=users.get(email, User(email, email, "admin")).name,
-                            role="admin", email=email)
+        prev = users.get(ident)
+        users[ident] = User(subject=ident, name=(prev.name if prev else ident),
+                            role="admin", email=ident if is_email(ident) else "")
     if not users:
         return None
     return users
 
 
-def resolve_email(users: dict[str, User] | None, email: str, via: str) -> User | None:
-    """IdP·프록시가 인증한 이메일 → User. 인가되지 않으면 None."""
+def resolve_email(users: dict[str, User] | None, ident: str, via: str) -> User | None:
+    """IdP·프록시가 인증한 식별자(이메일 또는 아이디) → User. 인가 안 되면 None."""
     if users is None:
         return ALL_ACCESS
-    e = normalize_email(email)
+    e = normalize_id(ident)
     if not e:
         return None
     hit = users.get(e)
@@ -160,7 +197,15 @@ def resolve_email(users: dict[str, User] | None, email: str, via: str) -> User |
     role = _default_role()
     if role is None:
         return None                            # 목록 밖은 거부(화이트리스트 운영)
-    return User(subject=e, name=e, role=role, email=e, via=via)
+    if not domain_allowed(e):
+        # IdP 가 외부·게스트 계정을 인증해 줄 수도 있다 — 사내 도메인만 자동 등록한다.
+        log.warning("자동 등록 거부(허용 도메인 아님): %s", e)
+        return None
+    return User(subject=e, name=e, role=role, email=e if is_email(e) else "", via=via)
+
+
+# 이름이 이메일만 받는 것처럼 읽혀서 별칭을 둔다(호출부는 점진 이행).
+resolve_identity = resolve_email
 
 
 def fingerprint(secret: str) -> str:
@@ -175,5 +220,6 @@ def auth_status(users: dict[str, User] | None) -> dict:
         "users_file_present": _users_path().is_file(),
         "admin_emails_env": len(_admin_emails()),
         "default_role": _default_role() or "(거부)",
+        "allowed_domains": sorted(allowed_domains()),
         "roles": {r: sorted(c) for r, c in CAPABILITIES.items()},
     }

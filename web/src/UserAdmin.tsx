@@ -102,7 +102,7 @@ export default function UserAdmin({ myEmail, onChanged }: {
             </div>
             <div className="flex flex-wrap gap-2">
               <input value={email} onChange={(e) => setEmail(e.target.value)}
-                placeholder="이메일 (SSO 계정)" autoComplete="off"
+                placeholder="ID — 이메일 또는 아이디" autoComplete="off"
                 className={`${inputCls} min-w-[200px] flex-1`} />
               <input value={name} onChange={(e) => setName(e.target.value)}
                 placeholder="이름 (선택)" autoComplete="off"
@@ -117,7 +117,10 @@ export default function UserAdmin({ myEmail, onChanged }: {
               </Button>
             </div>
             <p className="mt-2 text-[11px] leading-relaxed text-zinc-400">
-              이미 있는 이메일이면 이름·역할이 갱신되고, 회수된 계정이면 함께 복구됩니다.
+              ID 는 <b>이메일</b>(SSO 계정) 또는 <b>아이디</b>(<span className="font-mono">admin</span> 같은
+              로컬 계정)입니다. 아이디 계정은 IdP 가 그 값을 주지 않으므로 SSO 로는 들어오지
+              못하고, 개발용 로그인·프록시 헤더 경로에서 쓰입니다.<br />
+              이미 있는 ID 면 이름·역할이 갱신되고 회수된 계정이면 함께 복구됩니다.
               사용자는 조회·분석·RCA 초안 제출까지 하고, <b>Jira 게시·설정·지식 편집은 관리자만</b> 합니다.
             </p>
           </form>
@@ -130,7 +133,7 @@ export default function UserAdmin({ myEmail, onChanged }: {
             <table className="w-full text-sm">
               <thead>
                 <tr className="border-b border-zinc-800">
-                  {["이메일", "이름", "역할", ""].map((h, i) => (
+                  {["ID", "이름", "역할", ""].map((h, i) => (
                     <th key={i} className="px-3 py-2 text-left text-[11px] font-medium uppercase tracking-wider text-zinc-400">{h}</th>
                   ))}
                 </tr>

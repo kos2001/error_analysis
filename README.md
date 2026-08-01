@@ -123,8 +123,17 @@ HTTP 직접 호출)** 단일 엔진으로 생성한다. 모델·엔드포인트�
 
 인가 목록은 `data/users.yaml`(예시: `data/users.example.yaml`, git 미추적) 또는
 `RVP_ADMIN_EMAILS`. **둘 다 없으면 인증 비활성 = 전체 권한**이고, 그 상태는 화면의
-"인증 비활성" 배지와 `GET /auth/config` 로 드러난다. 목록 밖 계정은
-`RVP_SSO_DEFAULT_ROLE`(기본 `user`, 빈 값이면 거부).
+"인증 비활성" 배지와 `GET /auth/config` 로 드러난다.
+
+**ID 는 이메일 또는 아이디**다. 사내 SSO 계정은 이메일(사내 형식 `xxx.samsung.com`,
+서브도메인 포함)을 쓰고, `admin` 같은 아이디는 IdP 를 거치지 않는 로컬 운영 계정이다
+— IdP 가 그 값을 이메일 클레임으로 주지 않으므로 OIDC 로는 로그인되지 않고,
+개발용 로그인·프록시 헤더 경로에서 쓴다.
+
+목록 밖 계정은 `RVP_SSO_DEFAULT_ROLE`(기본 `user`, 빈 값이면 거부)로 들어온다.
+`RVP_ALLOWED_EMAIL_DOMAINS=samsung.com` 을 두면 **사내 도메인만 자동 등록**된다
+(서브도메인 포함 — `sec.samsung.com` 통과, `evil-samsung.com` 차단). IdP 가 외부·게스트
+계정을 인증해 주는 구성에서 필요하다.
 
 세션: HttpOnly + SameSite=Lax 서명 쿠키. `RVP_SESSION_SECRET` 을 고정해야 재기동 후
 세션이 유지된다. https 배포에서는 `RVP_COOKIE_SECURE=1`.

@@ -38,8 +38,8 @@ def check(name: str, cond: bool, detail: str = "") -> None:
 def reset() -> None:
     USERS.write_text(
         "users:\n"
-        "  - email: boss@example.com\n    name: 관리자\n    role: admin\n"
-        "  - email: eng@example.com\n    name: 사용자\n    role: user\n",
+        "  - id: boss@example.com\n    name: 관리자\n    role: admin\n"
+        "  - id: eng@example.com\n    name: 사용자\n    role: user\n",
         encoding="utf-8")
 
 
@@ -68,12 +68,16 @@ def test_store() -> None:
     user_store.revoke("new.person@example.com", False, actor="t")
     check("복구", not {u["email"]: u for u in user_store.listing()["users"]}["new.person@example.com"]["revoked"])
 
-    for bad in ("nope", "a@b", "@x.com", ""):
+    # 아이디 계정도 등록된다
+    user_store.upsert("admin", "관리자", "admin", actor="t")
+    check("아이디(admin) 등록", any(u["email"] == "admin" and u["role"] == "admin"
+                                  for u in user_store.listing()["users"]))
+    for bad in ("a", "bad id", "@x.com", "", "UPPER CASE"):
         try:
             user_store.upsert(bad, "x", "user")
-            check(f"잘못된 이메일 거부 {bad!r}", False, "예외가 안 났다")
+            check(f"잘못된 ID 거부 {bad!r}", False, "예외가 안 났다")
         except user_store.UserStoreError:
-            check(f"잘못된 이메일 거부 {bad!r}", True)
+            check(f"잘못된 ID 거부 {bad!r}", True)
     try:
         user_store.upsert("ok@example.com", "x", "superuser")
         check("알 수 없는 역할 거부", False, "예외가 안 났다")
@@ -83,7 +87,7 @@ def test_store() -> None:
 
 def test_lockout_guard() -> None:
     print("\n[잠금 방지]")
-    USERS.write_text("users:\n  - email: solo@example.com\n    name: 유일관리자\n    role: admin\n",
+    USERS.write_text("users:\n  - id: solo@example.com\n    name: 유일관리자\n    role: admin\n",
                      encoding="utf-8")
     for label, fn in [
         ("마지막 관리자 회수 거부", lambda: user_store.revoke("solo@example.com", True)),
@@ -104,7 +108,7 @@ def test_lockout_guard() -> None:
         check("관리자 2명이면 강등 허용", False, str(e)[:60])
 
     # 환경변수 관리자가 탈출구로 인정된다
-    USERS.write_text("users:\n  - email: solo@example.com\n    name: 유일\n    role: admin\n",
+    USERS.write_text("users:\n  - id: solo@example.com\n    name: 유일\n    role: admin\n",
                      encoding="utf-8")
     os.environ["RVP_ADMIN_EMAILS"] = "escape@example.com"
     try:
@@ -161,8 +165,8 @@ def test_api() -> None:
         check("자기 자신 회수 거부(400)", r.status_code == 400, f"실제 {r.status_code}")
         check("자기 회수 거부 사유 명시", "자기 자신" in r.json().get("detail", ""))
 
-        r = c.post("/auth/users", json={"email": "bad", "role": "user"})
-        check("잘못된 이메일 → 400", r.status_code == 400)
+        r = c.post("/auth/users", json={"email": "bad id", "role": "user"})
+        check("잘못된 ID → 400", r.status_code == 400)
         r = c.post("/auth/users/revoke", json={"email": "nobody@example.com"})
         check("목록 밖 회수 → 400", r.status_code == 400)
 

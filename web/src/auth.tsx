@@ -88,7 +88,7 @@ export function RoleBadge({ me }: { me: Me }) {
   return (
     <span title={me.via === "disabled"
       ? "인가 목록(users.yaml / RVP_ADMIN_EMAILS)이 없어 인증이 꺼져 있습니다 — 전체 권한"
-      : `${me.email || me.subject} · 인증 경로 ${me.via} · 권한 ${me.capabilities.length}개`}
+      : `${me.subject} · 인증 경로 ${me.via} · 권한 ${me.capabilities.length}개`}
       className={`inline-flex items-center whitespace-nowrap rounded-full border px-2.5 py-0.5 text-[11px] font-medium ${tone}`}>
       {label}
     </span>
@@ -146,7 +146,7 @@ export function LoginScreen({ cfg, onDone }: { cfg: AuthConfig | null; onDone: (
                 개발용 로그인
               </div>
               <input value={email} onChange={(e) => setEmail(e.target.value)}
-                placeholder="인가된 이메일" autoComplete="username" className={inputCls} />
+                placeholder="ID (이메일 또는 아이디)" autoComplete="username" className={inputCls} />
               <Button type="submit" disabled={busy || !email} className="mt-2 w-full">
                 {busy ? "확인 중…" : "로그인"}
               </Button>

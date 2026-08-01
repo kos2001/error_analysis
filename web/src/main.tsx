@@ -85,7 +85,7 @@ function Shell() {
               <div className="ml-2 flex items-center gap-2 border-l border-zinc-800 pl-3">
                 <RoleBadge me={me} />
                 <span className="max-w-[140px] truncate text-[11px] text-zinc-400"
-                  title={me.email || me.subject}>{me.name || me.email}</span>
+                  title={me.subject}>{me.name || me.subject}</span>
                 {me.via !== "disabled" && (
                   <button onClick={logout} title="로그아웃"
                     className="text-[11px] text-zinc-400 underline decoration-dotted underline-offset-2 hover:text-sky-400">
@@ -105,7 +105,7 @@ function Shell() {
         ) : status === undefined ? (
           <div className="h-full flex items-center justify-center text-zinc-400 text-sm">설정 확인 중…</div>
         ) : showOnboarding ? (
-          <Onboarding status={status} onDone={() => load(true)} myEmail={me?.email ?? ""} authReady={!!status?.ready} />
+          <Onboarding status={status} onDone={() => load(true)} myEmail={me?.subject ?? ""} authReady={!!status?.ready} />
         ) : route.view === "rca" ? (
           <RcaQueue onBack={() => { go({ view: "app" }); loadPending(); }} onChange={loadPending} />
         ) : route.view === "voc" ? (
