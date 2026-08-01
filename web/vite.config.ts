@@ -20,7 +20,10 @@ export default defineConfig({
   plugins: [react()],
   server: {
     proxy: {
-      [`^/(${API_PREFIXES.join('|')})(/|$)`]: {
+      // (?:[/?]|$) — 쿼리스트링이 붙는 경우까지 포함해야 한다. (/|$) 로 두면
+      // `/graph?key=LSI-7` 처럼 최상위 경로 + 쿼리인 요청이 매칭되지 않아 Vite 가
+      // index.html 을 돌려주고, 프런트의 r.json() 이 조용히 실패한다(실측으로 확인).
+      [`^/(${API_PREFIXES.join('|')})(?:[/?]|$)`]: {
         target: API_TARGET,
         changeOrigin: false,   // Host 를 유지해 쿠키 도메인이 갈라지지 않게 한다
         ws: false,

@@ -141,6 +141,9 @@ HTTP 직접 호출)** 단일 엔진으로 생성한다. 모델·엔드포인트�
 개발 서버는 Vite 프록시로 프런트와 API 를 **같은 오리진**으로 맞춘다
 (`VITE_PROXY_TARGET`, 기본 `http://127.0.0.1:8011`) — 교차 사이트에서는 Lax 쿠키가
 실리지 않기 때문이고, 프로덕션은 FastAPI 가 `web/dist` 를 같은 오리진에서 서빙한다.
+백엔드에 새 최상위 경로를 추가하면 `web/vite.config.ts` 의 `API_PREFIXES` 에도
+넣어야 한다 — 빠지면 개발 서버가 그 요청에 index.html 을 돌려주고, 프런트에서는
+"JSON 이 아닌 응답" 으로 나타난다.
 
 검증:
 - `.venv/bin/python tests/test_auth_rbac.py` (45개 — 역할별 허용·차단, 세션 위조·만료,

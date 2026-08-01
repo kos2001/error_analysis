@@ -134,6 +134,8 @@ export default function FailureAnalysis({ onQueueChange, routeKey, onSelectKey, 
   const [keyInput, setKeyInput] = useState("");
   const [err, setErr] = useState("");
   const [graph, setGraph] = useState<GraphData | null>(null);
+  const [graphErr, setGraphErr] = useState("");
+  const [graphLoading, setGraphLoading] = useState(false);
   // 사이드바 너비 조정 + 접기
   const [leftW, setLeftW] = useState(320);
   const [rightW, setRightW] = useState(340);
@@ -164,11 +166,24 @@ export default function FailureAnalysis({ onQueueChange, routeKey, onSelectKey, 
     fetch(`${API}/issues/unresolved`).then((r) => r.json()).then((d) => setIssues(d.issues ?? [])).catch(() => {});
   }, []);
 
-  // 선택 이슈가 바뀌면 관계 그래프 로드 (우측 사이드바)
+  // 선택 이슈가 바뀌면 관계 그래프 로드 (우측 사이드바).
+  // 실패를 삼키지 않는다 — 예전에는 catch 에서 null 로만 되돌려, 응답이 JSON 이
+  // 아닌 경우(dev 프록시 미스매치 등)가 영구히 "로딩 중" 으로 보였다.
   useEffect(() => {
-    if (!sel?.key) { setGraph(null); return; }
+    if (!sel?.key) { setGraph(null); setGraphErr(""); setGraphLoading(false); return; }
+    let alive = true;
+    setGraph(null); setGraphErr(""); setGraphLoading(true);
     fetch(`${API}/graph?key=${encodeURIComponent(sel.key)}&k=12`)
-      .then((r) => r.json()).then(setGraph).catch(() => setGraph(null));
+      .then(async (r) => {
+        const ct = r.headers.get("content-type") || "";
+        if (!r.ok) throw new Error(`HTTP ${r.status}`);
+        if (!ct.includes("application/json")) throw new Error(`JSON 이 아닌 응답 (${ct.split(";")[0] || "unknown"})`);
+        return r.json();
+      })
+      .then((d) => { if (alive) { if (d?.error) throw new Error(d.error); setGraph(d); } })
+      .catch((e) => { if (alive) setGraphErr(e.message || "불러오기 실패"); })
+      .finally(() => { if (alive) setGraphLoading(false); });
+    return () => { alive = false; };
   }, [sel?.key]);
 
   const cats = useMemo(() => Array.from(new Set(issues.map((i) => i.category))).sort(), [issues]);
@@ -799,8 +814,23 @@ export default function FailureAnalysis({ onQueueChange, routeKey, onSelectKey, 
         <div className="flex-1 overflow-y-auto p-3">
           {!sel ? (
             <div className="p-4 text-center text-xs text-zinc-400">이슈를 선택하면 관련 이슈들의 관계가 그래프로 표시됩니다.</div>
+          ) : graphLoading ? (
+            <div className="p-4" aria-busy="true">
+              <div className="mx-auto h-32 w-32 animate-pulse rounded-full border-4 border-zinc-800" />
+              <div className="mt-3 text-center text-xs text-zinc-400">관계 그래프 불러오는 중…</div>
+            </div>
+          ) : graphErr ? (
+            <div className="p-4 text-center">
+              <div className="rounded-lg border border-red-900/60 bg-red-950/40 px-3 py-2 text-xs text-red-400">
+                관계 그래프를 불러오지 못했습니다 — {graphErr}
+              </div>
+              <button onClick={() => setSel({ ...sel })}
+                className="mt-2 text-[11px] text-sky-400 underline hover:text-sky-300">다시 시도</button>
+            </div>
           ) : !graph || graph.nodes.length <= 1 ? (
-            <div className="p-4 text-center text-xs text-zinc-400">관계 그래프 로딩 중… (또는 관련 이슈 없음)</div>
+            <div className="p-4 text-center text-xs text-zinc-400">
+              이 이슈와 엔티티(칩·분류·기술용어)를 공유하는 다른 이슈가 없습니다.
+            </div>
           ) : (
             <>
               <RelationGraph data={graph} onSelect={goKey} />
