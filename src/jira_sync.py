@@ -132,6 +132,11 @@ def sync(full: bool = False, reconcile: bool = False) -> dict:
         removed = known - live
 
     fetched = _fetch_many(keys) if keys else []
+    # 오버랩 창(OVERLAP_SEC) 때문에 방금 바뀐 이슈는 여러 폴에 걸쳐 계속 조회된다.
+    # 내용이 같으면 변경으로 보지 않는다 — 그러지 않으면 이슈 하나를 수정한 뒤
+    # 2분간 매 폴마다 KB 캐시를 무효화(=전체 재빌드)하게 된다.
+    by_key = {r.get("key"): r for r in raw if isinstance(r, dict)}
+    fetched = [f for f in fetched if by_key.get(f["key"]) != f]
     changed = bool(fetched or removed)
     if changed:
         _write_json_atomic(ALL_RAW, _apply(raw, fetched, removed))
