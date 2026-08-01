@@ -15,14 +15,14 @@ export function StatTile({ label, value, sub, tone = "neutral", title }: {
   title?: string;
 }) {
   const color = {
-    neutral: "text-slate-800", good: "text-emerald-600",
-    warn: "text-amber-600", bad: "text-rose-600",
+    neutral: "text-zinc-100", good: "text-emerald-400",
+    warn: "text-amber-400", bad: "text-red-400",
   }[tone];
   return (
-    <div className="rounded-lg border border-slate-200 bg-white px-3 py-2" title={title}>
-      <div className="text-[11px] text-slate-500 leading-tight">{label}</div>
+    <div className="rounded-lg border border-zinc-800 bg-zinc-950/60 px-3 py-2" title={title}>
+      <div className="text-[11px] text-zinc-400 leading-tight">{label}</div>
       <div className={`text-xl font-bold leading-tight mt-0.5 ${color}`}>{value}</div>
-      {sub && <div className="text-[11px] text-slate-400 leading-tight mt-0.5">{sub}</div>}
+      {sub && <div className="text-[11px] text-zinc-400 leading-tight mt-0.5">{sub}</div>}
     </div>
   );
 }
@@ -37,7 +37,7 @@ export function BarList({ items, max, unit = "", labelW = 112, emptyText = "데�
   labelW?: number;
   emptyText?: string;
 }) {
-  if (!items.length) return <div className="text-xs text-slate-400 py-2">{emptyText}</div>;
+  if (!items.length) return <div className="text-xs text-zinc-400 py-2">{emptyText}</div>;
   const top = max ?? Math.max(...items.map((i) => i.value), 1);
   return (
     <div className="space-y-1">
@@ -45,13 +45,13 @@ export function BarList({ items, max, unit = "", labelW = 112, emptyText = "데�
         const pct = top > 0 ? Math.max(0, Math.min(100, (it.value / top) * 100)) : 0;
         const row = (
           <>
-            <span className="text-[11px] text-slate-600 truncate shrink-0" style={{ width: labelW }}
+            <span className="text-[11px] text-zinc-300 truncate shrink-0" style={{ width: labelW }}
               title={it.label}>{it.label}</span>
-            <span className="flex-1 h-3 rounded bg-slate-100 overflow-hidden" aria-hidden="true">
+            <span className="flex-1 h-3 rounded bg-zinc-800 overflow-hidden" aria-hidden="true">
               <span className="block h-full rounded"
                 style={{ width: `${pct}%`, background: PALETTE[i % PALETTE.length] }} />
             </span>
-            <span className="text-[11px] font-medium text-slate-700 w-14 text-right shrink-0 tabular-nums">
+            <span className="text-[11px] font-medium text-zinc-300 w-14 text-right shrink-0 tabular-nums">
               {it.value}{unit}
             </span>
           </>
@@ -59,7 +59,7 @@ export function BarList({ items, max, unit = "", labelW = 112, emptyText = "데�
         const cls = "flex items-center gap-2 w-full text-left";
         return it.onClick
           ? <button key={it.label + i} onClick={it.onClick} title={it.hint ?? it.label}
-              className={`${cls} rounded hover:bg-indigo-50 px-1 -mx-1`}>{row}</button>
+              className={`${cls} rounded hover:bg-zinc-800 px-1 -mx-1`}>{row}</button>
           : <div key={it.label + i} title={it.hint ?? it.label} className={cls}>{row}</div>;
       })}
     </div>
@@ -76,7 +76,7 @@ export function Donut({ items, size = 132, thickness = 20, centerLabel, centerVa
 }) {
   const data = items.filter((i) => i.value > 0);
   const total = data.reduce((s, i) => s + i.value, 0);
-  if (!total) return <div className="text-xs text-slate-400 py-2">데이터 없음</div>;
+  if (!total) return <div className="text-xs text-zinc-400 py-2">데이터 없음</div>;
   const r = (size - thickness) / 2;
   const C = 2 * Math.PI * r;
   // 각 조각의 시작 오프셋을 미리 계산한다 — 렌더 중 누적 변수를 갱신하지 않기 위해.
@@ -103,9 +103,9 @@ export function Donut({ items, size = 132, thickness = 20, centerLabel, centerVa
         {(centerValue !== undefined || centerLabel) && (
           <g>
             <text x={size / 2} y={size / 2 - 1} textAnchor="middle" fontSize={19} fontWeight={700}
-              fill="#1e293b">{centerValue ?? total}</text>
+              fill="#fafafa">{centerValue ?? total}</text>
             <text x={size / 2} y={size / 2 + 14} textAnchor="middle" fontSize={10}
-              fill="#94a3b8">{centerLabel ?? "합계"}</text>
+              fill="#71717a">{centerLabel ?? "합계"}</text>
           </g>
         )}
       </svg>
@@ -114,8 +114,8 @@ export function Donut({ items, size = 132, thickness = 20, centerLabel, centerVa
           <li key={d.label} className="flex items-center gap-1.5">
             <span className="w-2.5 h-2.5 rounded-sm shrink-0"
               style={{ background: PALETTE[i % PALETTE.length] }} aria-hidden="true" />
-            <span className="text-slate-600 truncate" title={d.label}>{d.label || "(미분류)"}</span>
-            <span className="text-slate-400 tabular-nums shrink-0">
+            <span className="text-zinc-300 truncate" title={d.label}>{d.label || "(미분류)"}</span>
+            <span className="text-zinc-400 tabular-nums shrink-0">
               {d.value} · {Math.round((d.value / total) * 100)}%
             </span>
           </li>
@@ -133,12 +133,12 @@ export function RateBar({ label, value, warnBelow = 0.95 }: {
   const bad = value < warnBelow;
   return (
     <div className="flex items-center gap-2" title={`${label}: ${pct}%`}>
-      <span className="text-[11px] text-slate-600 truncate shrink-0 w-36">{label}</span>
-      <span className="flex-1 h-2.5 rounded bg-slate-100 overflow-hidden" aria-hidden="true">
+      <span className="text-[11px] text-zinc-300 truncate shrink-0 w-36">{label}</span>
+      <span className="flex-1 h-2.5 rounded bg-zinc-800 overflow-hidden" aria-hidden="true">
         <span className={`block h-full rounded ${bad ? "bg-amber-500" : "bg-emerald-500"}`}
           style={{ width: `${Math.min(100, pct)}%` }} />
       </span>
-      <span className={`text-[11px] font-medium w-12 text-right tabular-nums ${bad ? "text-amber-600" : "text-slate-700"}`}>
+      <span className={`text-[11px] font-medium w-12 text-right tabular-nums ${bad ? "text-amber-400" : "text-zinc-300"}`}>
         {pct}%
       </span>
     </div>

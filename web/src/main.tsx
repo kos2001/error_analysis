@@ -6,7 +6,7 @@ import Onboarding from './Onboarding.tsx'
 import RcaQueue from './RcaQueue.tsx'
 import VocPage from './VocPage.tsx'
 import Dashboard from './Dashboard.tsx'
-import { useRoute } from './useDeepLink'
+import { useRoute, type Route } from './useDeepLink'
 
 const API = (import.meta as any).env?.VITE_API ?? "http://127.0.0.1:8001";
 
@@ -27,41 +27,47 @@ function Root() {
   const showOnboarding = status !== undefined && (route.view === "settings" || !status.ready);
   const jiraBase = status?.jira?.base_url ?? "";
 
-  const tab = (view: "app" | "dashboard", label: string, title: string) => (
-    <button onClick={() => go({ view })} title={title}
-      className={`px-3 py-1 rounded ${route.view === view && !showOnboarding
-        ? "bg-indigo-600 text-white" : "text-slate-300 hover:text-white"}`}>
-      {label}
-    </button>
-  );
+  // 네비게이션 항목 — 사이드바를 하나 더 두면 3분할(목록/본문/그래프)이 좁아지므로
+  // 상단바를 유지하되, 하네스의 활성/비활성 톤(zinc-800 채움 vs zinc-400 글자)을 쓴다.
+  const navItem = (view: Route["view"], icon: string, label: string, title: string,
+                   onClick?: () => void, badge?: number) => {
+    const active = route.view === view && !showOnboarding;
+    return (
+      <button onClick={onClick ?? (() => go({ view } as Route))} title={title}
+        className={`flex items-center gap-2 rounded-lg px-3 py-1.5 text-sm transition-colors outline-none focus-visible:ring-1 focus-visible:ring-sky-500 ${
+          active ? "bg-zinc-800 font-medium text-zinc-50" : "text-zinc-300 hover:bg-zinc-900 hover:text-zinc-200"}`}>
+        <span className="w-4 text-center text-zinc-400">{icon}</span>
+        {label}
+        {badge ? (
+          <span className="rounded-full bg-sky-500/15 px-1.5 text-[11px] font-medium text-sky-300">{badge}</span>
+        ) : null}
+      </button>
+    );
+  };
 
   return (
-    <div className="h-screen flex flex-col">
-      <nav className="flex items-center gap-1 px-4 h-11 bg-slate-900 text-slate-300 text-sm shrink-0">
+    <div className="h-screen flex flex-col bg-zinc-950 text-zinc-200">
+      <nav className="flex shrink-0 items-center gap-1 border-b border-zinc-800 bg-zinc-950 px-4 h-14">
         <button onClick={() => go({ view: "app" })} title="홈(분석 화면)으로"
-          className="font-semibold text-white mr-3 hover:opacity-80">🏠 LSI Error Analysis</button>
-        {tab("app", "불량 분석 추천", "미해결 이슈의 근본원인·해결책 추천")}
-        {status?.ready && tab("dashboard", "📊 지식 현황", "KB 구성·품질·중복·모순·공백·효능")}
+          className="mr-4 text-left outline-none focus-visible:ring-1 focus-visible:ring-sky-500 rounded">
+          <span className="block text-sm font-semibold tracking-tight text-zinc-50">LSI 불량 분석</span>
+          <span className="block text-[11px] text-zinc-400">과거 해결 사례 기반 근본원인 추천</span>
+        </button>
+        {navItem("app", "◎", "분석", "미해결 이슈의 근본원인·해결책 추천")}
+        {status?.ready && navItem("dashboard", "▤", "지식 현황", "KB 구성·품질·중복·모순·공백·효능")}
         {status?.ready && !showOnboarding && (
-          <div className="ml-auto flex items-center gap-2">
-            <button onClick={() => { go({ view: route.view === "rca" ? "app" : "rca" }); loadPending(); }}
-              title="RCA 댓글 승인 대기 (HITL)"
-              className={`px-2 py-0.5 rounded ${route.view === "rca" ? "bg-indigo-600 text-white" : "text-slate-300 hover:text-white"}`}>
-              📤 승인 대기{pending > 0 ? ` ${pending}` : ""}
-            </button>
-            <button onClick={() => go({ view: route.view === "voc" ? "app" : "voc" })}
-              title="서비스 의견 (VOC)"
-              className={`px-2 py-0.5 rounded ${route.view === "voc" ? "bg-indigo-600 text-white" : "text-slate-300 hover:text-white"}`}>
-              💬 VOC
-            </button>
-            <button onClick={() => go({ view: "settings" })} title="설정 변경"
-              className="text-slate-400 hover:text-white px-2">⚙️ 설정</button>
+          <div className="ml-auto flex items-center gap-1">
+            {navItem("rca", "↗", "승인 대기", "RCA 댓글 승인 대기 (HITL)",
+              () => { go({ view: route.view === "rca" ? "app" : "rca" }); loadPending(); }, pending)}
+            {navItem("voc", "✎", "VOC", "서비스 의견 (VOC)",
+              () => go({ view: route.view === "voc" ? "app" : "voc" }))}
+            {navItem("settings", "⚙", "설정", "설정 변경")}
           </div>
         )}
       </nav>
       <div className="flex-1 min-h-0">
         {status === undefined ? (
-          <div className="h-full flex items-center justify-center text-slate-400 text-sm">설정 확인 중…</div>
+          <div className="h-full flex items-center justify-center text-zinc-400 text-sm">설정 확인 중…</div>
         ) : showOnboarding ? (
           <Onboarding status={status} onDone={load} />
         ) : route.view === "rca" ? (

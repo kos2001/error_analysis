@@ -55,24 +55,25 @@ export default function FreshnessBadge({ onSynced }: { onSynced?: () => void }) 
   const elapsed = ts ? (now / 1000 - ts) : null;
   const off = st.poll_interval_sec <= 0;
   const broken = !!st.error || (!st.running && !off);
-  const tone = broken ? "bg-rose-500/25 text-rose-50"
-    : off ? "bg-white/15 text-white/80"
-    : "bg-white/15 text-white/90";
+  // 하네스 배지 규칙: rounded-full border, <색>-950/60 배경 + <색>-400 글자.
+  const tone = broken ? "border-red-900/60 bg-red-950/60 text-red-400"
+    : off ? "border-zinc-700/60 bg-zinc-800/80 text-zinc-300"
+    : "border-emerald-900/60 bg-emerald-950/60 text-emerald-400";
   const label = broken ? "동기화 오류"
     : off ? "자동 동기화 꺼짐"
     : elapsed != null ? `${ago(elapsed)} 동기화` : "동기화 대기";
 
   return (
-    <span className={`inline-flex items-center gap-1.5 rounded px-2 py-1 ${tone}`}
+    <span className={`inline-flex items-center gap-1.5 whitespace-nowrap rounded-full border px-2.5 py-0.5 text-[11px] font-medium ${tone}`}
       title={[
         `Jira 자동 동기화 ${off ? "비활성" : `${st.poll_interval_sec}초 주기`}`,
         st.error ? `오류: ${st.error}` : "",
         st.last ? `최근: ${st.last.mode} · 갱신 ${st.last.upserted}건 · 삭제 ${st.last.deleted}건` : "",
       ].filter(Boolean).join("\n")}>
-      <span aria-hidden="true">{broken ? "⚠" : off ? "⏸" : "🔄"}</span>
+      <span aria-hidden="true">{broken ? "⚠" : off ? "⏸" : "●"}</span>
       {label}
       <button onClick={syncNow} disabled={busy}
-        className="underline decoration-dotted hover:text-white disabled:opacity-60"
+        className="underline decoration-dotted underline-offset-2 hover:text-zinc-100 disabled:opacity-60"
         title="폴 주기를 기다리지 않고 지금 Jira와 맞춥니다">
         {busy ? "동기화 중…" : "지금"}
       </button>
