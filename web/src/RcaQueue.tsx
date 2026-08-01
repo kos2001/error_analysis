@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
 import ReactMarkdown from "react-markdown";
+import { inputCls } from "./ui";
 import remarkGfm from "remark-gfm";
 
 const API = (import.meta as any).env?.VITE_API ?? "";   // 빈 값 = 같은 오리진(개발은 vite 프록시)
@@ -113,9 +114,12 @@ export default function RcaQueue({ onBack, onChange }: { onBack: () => void; onC
                     {(panelTab[it.key] ?? "preview") === "edit" ? (
                       <textarea value={bodyOf(it)} onChange={(e) => setEdits((s) => ({ ...s, [it.key]: e.target.value }))}
                         rows={14} spellCheck={false}
-                        className="w-full text-xs font-mono p-3 focus:outline-none resize-y bg-zinc-900/60" />
+                        className={`${inputCls} resize-y rounded-none border-0 p-3 font-mono text-xs`} />
                     ) : (
-                      <div className="p-3 bg-zinc-900/60 prose prose-sm max-w-none max-h-96 overflow-y-auto">
+                      <div
+                        /* prose-invert 필수 — 빼면 typography 기본색(어두운 회색)이 남아
+                           다크 배경에서 본문이 보이지 않는다. */
+                        className="max-h-96 overflow-y-auto bg-zinc-900/60 p-3 prose prose-sm prose-invert max-w-none prose-headings:text-sky-300">
                         <ReactMarkdown remarkPlugins={[remarkGfm]}>{bodyOf(it)}</ReactMarkdown>
                       </div>
                     )}
@@ -147,7 +151,7 @@ export default function RcaQueue({ onBack, onChange }: { onBack: () => void; onC
                     {validating === it.key ? "검증 중…" : "🔎 검증"}
                   </button>
                   <button onClick={() => act(it, "approve")} disabled={!!busy}
-                    className="text-sm px-4 py-2 rounded-lg bg-emerald-600 text-white hover:bg-emerald-700 disabled:opacity-50">
+                    className="rounded-lg bg-emerald-500 px-4 py-2 text-sm font-medium text-emerald-950 transition hover:bg-emerald-400 disabled:opacity-40">
                     {busy === it.key + "approve" ? "게시 중…" : (isEdited(it) ? "✅ 수정본 승인·게시" : "✅ 승인하고 Jira 게시")}
                   </button>
                   <button onClick={() => act(it, "reject")} disabled={!!busy}

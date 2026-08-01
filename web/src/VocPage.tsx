@@ -1,4 +1,5 @@
 import { useEffect, useState } from "react";
+import { inputCls } from "./ui";
 
 const API = (import.meta as any).env?.VITE_API ?? "";   // 빈 값 = 같은 오리진(개발은 vite 프록시)
 
@@ -72,17 +73,17 @@ export default function VocPage({ onBack }: { onBack: () => void }) {
             {CATS.map((c) => (
               <button key={c.key} onClick={() => setCategory(c.key)}
                 className={`text-sm px-3 py-1 rounded-full border ${category === c.key
-                  ? "bg-zinc-100 text-zinc-900 text-white border-sky-600" : "border-zinc-700 text-zinc-300 hover:border-sky-600"}`}>
+                  ? "bg-zinc-100 text-zinc-900 border-sky-600" : "border-zinc-700 text-zinc-300 hover:border-sky-600"}`}>
                 {c.icon} {c.label}
               </button>
             ))}
           </div>
           <textarea value={message} onChange={(e) => setMessage(e.target.value)} rows={4}
             placeholder="무엇이 불편했나요? 어떤 기능이 필요한가요?"
-            className="w-full text-sm p-3 rounded-lg border border-zinc-700 focus:border-sky-500 focus:outline-none resize-y" />
+            className={`${inputCls} resize-y p-3`} />
           <div className="flex items-center gap-3 mt-3">
             <input value={author} onChange={(e) => setAuthor(e.target.value)} placeholder="이름(선택)"
-              className="text-sm px-3 py-2 rounded-lg border border-zinc-700 focus:border-sky-500 focus:outline-none w-40" />
+              className={`${inputCls} w-40`} />
             <button onClick={submit} disabled={busy}
               className="text-sm px-4 py-2 rounded-lg bg-zinc-100 text-zinc-900 hover:bg-white disabled:opacity-50">
               {busy ? "등록 중…" : "의견 보내기"}

@@ -8,6 +8,12 @@
  *   · 포커스 링은 sky-500
  *
  * 화면마다 클래스를 흩뿌리지 않고 여기로 모아, 톤이 갈라지는 것을 막는다.
+ *
+ * 다크 테마에서 놓치기 쉬운 두 가지 — 실제로 글자가 보이지 않는 사고를 냈다:
+ *   1. 마크다운은 `prose`만 쓰면 typography 기본색(어두운 회색)이 남는다.
+ *      **반드시 `prose-invert`** 를 함께 붙인다.
+ *   2. 폼 컨트롤(input/textarea/select)은 색을 상속하지 않는다 — UA 기본값이
+ *      쓰인다. 아래 inputCls/selectCls 를 쓰고 직접 클래스를 짜지 않는다.
  */
 
 import type { ButtonHTMLAttributes, ReactNode } from "react";

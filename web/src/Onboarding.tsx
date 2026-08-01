@@ -1,5 +1,6 @@
 import { useState } from "react";
 import UserAdmin from "./UserAdmin.tsx";
+import { inputCls } from "./ui";
 
 const API = (import.meta as any).env?.VITE_API ?? "";   // 빈 값 = 같은 오리진(개발은 vite 프록시)
 
@@ -10,7 +11,7 @@ function Field({ label, hint, ...rest }: { label: string; hint?: string } & Reac
     <label className="block">
       <span className="text-xs font-medium text-zinc-300">{label}</span>
       <input {...rest}
-        className="mt-1 w-full px-3 py-2 text-sm rounded-lg border border-zinc-700 focus:border-sky-500 focus:outline-none focus:ring-1 focus:ring-sky-500" />
+        className={`${inputCls} mt-1`} />
       {hint && <span className="text-[11px] text-zinc-400 mt-0.5 block">{hint}</span>}
     </label>
   );
@@ -121,8 +122,8 @@ export default function Onboarding({ status, onDone, myEmail = "", authReady = f
             <Field label="Base URL" value={baseUrl} onChange={(e) => setBaseUrl(e.target.value)} placeholder="https://your-domain.atlassian.net" />
             <Field label="Project Key" value={projectKey} onChange={(e) => setProjectKey(e.target.value)} placeholder="LSI" />
             <div className="flex gap-2 text-xs">
-              <button onClick={() => setAuthType("basic")} className={`px-3 py-1 rounded-full ${authType === "basic" ? "bg-zinc-100 text-zinc-900 text-white" : "bg-zinc-800 text-zinc-300"}`}>Cloud (email + API token)</button>
-              <button onClick={() => setAuthType("pat")} className={`px-3 py-1 rounded-full ${authType === "pat" ? "bg-zinc-100 text-zinc-900 text-white" : "bg-zinc-800 text-zinc-300"}`}>Server/DC (PAT)</button>
+              <button onClick={() => setAuthType("basic")} className={`px-3 py-1 rounded-full ${authType === "basic" ? "bg-zinc-100 text-zinc-900" : "bg-zinc-800 text-zinc-300"}`}>Cloud (email + API token)</button>
+              <button onClick={() => setAuthType("pat")} className={`px-3 py-1 rounded-full ${authType === "pat" ? "bg-zinc-100 text-zinc-900" : "bg-zinc-800 text-zinc-300"}`}>Server/DC (PAT)</button>
             </div>
             {authType === "basic" ? (
               <>
@@ -145,7 +146,7 @@ export default function Onboarding({ status, onDone, myEmail = "", authReady = f
         {err && <div className="text-sm text-red-400 bg-red-950/40 border border-red-900/60 rounded-lg p-3 mb-4">{err}</div>}
 
         <button onClick={save} disabled={saving || !llmReady || !jiraReady}
-          className="w-full py-3 rounded-xl bg-zinc-950 text-white font-semibold hover:opacity-90 disabled:opacity-40 transition">
+          className="w-full rounded-xl bg-zinc-100 py-3 font-semibold text-zinc-900 transition hover:bg-white disabled:opacity-40">
           {saving ? "저장 중…" : "저장하고 시작하기"}
         </button>
         <p className="text-center text-[11px] text-zinc-400 mt-2">설정은 서버에 안전하게 저장되며, 다음 실행부터 이 화면은 생략됩니다.</p>
