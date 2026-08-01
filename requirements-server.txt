@@ -10,3 +10,5 @@ networkx
 numpy
 requests
 python-dotenv
+PyYAML          # 사용자·역할 정의(users.yaml)
+PyJWT[crypto]   # OIDC id_token 검증(SSO)

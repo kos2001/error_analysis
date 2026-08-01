@@ -1,0 +1,33 @@
+# 인가 목록 — 이 파일을 data/users.yaml 로 복사해서 쓰거나,
+# 화면(설정 → 사용자 관리)에서 관리한다.
+#
+# 이 파일이 없고 RVP_ADMIN_EMAILS 도 비어 있으면 **인증 비활성**(전체 권한)이다.
+# 로컬 개발 편의를 위한 기본값이므로, 운영에서는 반드시 목록을 둔다.
+#
+# id: 로그인 식별자.
+#     · 이메일 — 사내 SSO 계정 (사내 형식: xxx.samsung.com, 서브도메인 포함)
+#     · 아이디 — admin 같은 로컬 운영 계정. IdP 가 그 값을 주지 않으므로 OIDC 로는
+#       들어오지 못하고, 개발용 로그인(RVP_AUTH_DEV_LOGIN=1)·프록시 헤더에서 쓴다.
+# role:
+#   admin — 운영·설정·Jira 게시·지식 편집·동기화·평가
+#   user  — 이슈 조회·추천·심층 분석·RCA 초안 제출·피드백/VOC
+#
+# 목록에 없는 인증된 사용자는 RVP_SSO_DEFAULT_ROLE(기본 user)로 들어온다.
+# RVP_ALLOWED_EMAIL_DOMAINS=samsung.com 을 두면 사내 도메인만 자동 등록된다
+# (서브도메인 포함 — sec.samsung.com 도 통과). 화이트리스트로만 운영하려면
+# RVP_SSO_DEFAULT_ROLE= (빈 값) 으로 두면 목록 밖은 전부 거부된다.
+users:
+  - id: admin
+    name: 관리자
+    role: admin
+  - id: hong.gildong@samsung.com
+    name: 홍길동
+    role: admin
+  - id: analysis.eng@sec.samsung.com
+    name: 분석 담당 엔지니어
+    role: user
+  # 퇴사·권한회수는 지우지 말고 revoked 로 남긴다 — 이력이 보인다.
+  # - id: former@samsung.com
+  #   name: 前 담당자
+  #   role: user
+  #   revoked: true

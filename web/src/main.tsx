@@ -5,61 +5,120 @@ import FailureAnalysis from './FailureAnalysis.tsx'
 import Onboarding from './Onboarding.tsx'
 import RcaQueue from './RcaQueue.tsx'
 import VocPage from './VocPage.tsx'
+import Dashboard from './Dashboard.tsx'
+import { useRoute, type Route } from './useDeepLink'
+import { AuthProvider, LoginScreen, RoleBadge, useAuth } from './auth.tsx'
 
-const API = (import.meta as any).env?.VITE_API ?? "http://127.0.0.1:8001";
+const API = (import.meta as any).env?.VITE_API ?? "";   // 빈 값 = 같은 오리진(개발은 vite 프록시)
 
-function Root() {
+// 세션이 HttpOnly 쿠키에 있으므로 API 오리진 요청에는 credentials 가 실려야 한다.
+// 호출부를 전부 고치는 대신 여기서 한 번 감싼다(EventSource 는 withCredentials 로 별도 처리).
+{
+  const orig = window.fetch;
+  window.fetch = (input: any, init: any = {}) => {
+    const url = typeof input === "string" ? input : (input?.url ?? "");
+    if (url.startsWith(API) && init.credentials === undefined) {
+      init = { ...init, credentials: "include" };
+    }
+    return orig(input, init);
+  };
+}
+
+function Shell() {
   const [status, setStatus] = useState<any | undefined>(undefined); // undefined = 로딩
-  const [forceCfg, setForceCfg] = useState(false);                  // 설정 다시 열기
-  const [view, setView] = useState<"app" | "rca" | "voc">("app");
   const [pending, setPending] = useState(0);
-  const load = () => fetch(`${API}/config/status`).then((r) => r.json())
-    .then((s) => { setStatus(s); setForceCfg(false); })
+  // 화면 상태를 URL 해시로 옮겼다 — 새로고침·뒤로가기·링크 공유가 동작하고,
+  // 대시보드에서 이슈로 바로 들어오는 드릴다운도 같은 경로를 쓴다.
+  const [route, go] = useRoute();
+  // closeSettings 는 "설정 저장이 끝났으니 설정 화면을 닫아라" 는 뜻이다.
+  // 기본값을 false 로 둔다 — 초기 로드에서도 닫으면 #/settings 로 직접 들어올 수 없다.
+  const load = (closeSettings = false) => fetch(`${API}/config/status`).then((r) => r.json())
+    .then((s) => { setStatus(s); if (closeSettings && route.view === "settings") go({ view: "app" }, false); })
     .catch(() => setStatus({ ready: false, _err: true }));
   const loadPending = () => fetch(`${API}/rca/pending`).then((r) => r.json())
     .then((d) => setPending(d.counts?.pending ?? 0)).catch(() => {});
   useEffect(() => { load(); loadPending(); }, []);
 
-  const showOnboarding = status !== undefined && (forceCfg || !status.ready);
-  const goHome = () => { setView("app"); setForceCfg(false); };
+  const { me, cfg, loading: authLoading, can, logout, reload: reloadAuth } = useAuth();
+  // 설정 화면·온보딩은 관리자 작업이다 — 권한이 없으면 강제하지 않는다.
+  const isAdmin = can("config.write");
+  const showOnboarding = status !== undefined && isAdmin
+    && (route.view === "settings" || !status.ready);
+  const jiraBase = status?.jira?.base_url ?? "";
+
+  // 네비게이션 항목 — 사이드바를 하나 더 두면 3분할(목록/본문/그래프)이 좁아지므로
+  // 상단바를 유지하되, 하네스의 활성/비활성 톤(zinc-800 채움 vs zinc-400 글자)을 쓴다.
+  const navItem = (view: Route["view"], icon: string, label: string, title: string,
+                   onClick?: () => void, badge?: number) => {
+    const active = route.view === view && !showOnboarding;
+    return (
+      <button onClick={onClick ?? (() => go({ view } as Route))} title={title}
+        className={`flex items-center gap-2 rounded-lg px-3 py-1.5 text-sm transition-colors outline-none focus-visible:ring-1 focus-visible:ring-sky-500 ${
+          active ? "bg-zinc-800 font-medium text-zinc-50" : "text-zinc-300 hover:bg-zinc-900 hover:text-zinc-200"}`}>
+        <span className="w-4 text-center text-zinc-400">{icon}</span>
+        {label}
+        {badge ? (
+          <span className="rounded-full bg-sky-500/15 px-1.5 text-[11px] font-medium text-sky-300">{badge}</span>
+        ) : null}
+      </button>
+    );
+  };
 
   return (
-    <div className="h-screen flex flex-col">
-      <nav className="flex items-center gap-1 px-4 h-11 bg-slate-900 text-slate-300 text-sm shrink-0">
-        <button onClick={goHome} title="홈(분석 화면)으로"
-          className="font-semibold text-white mr-3 hover:opacity-80">🏠 LSI Error Analysis</button>
-        <button onClick={goHome}
-          className={`px-3 py-1 rounded ${view === "app" && !forceCfg ? "bg-indigo-600 text-white" : "text-slate-300 hover:text-white"}`}>
-          불량 분석 추천
+    <div className="h-screen flex flex-col bg-zinc-950 text-zinc-200">
+      <nav className="flex shrink-0 items-center gap-1 border-b border-zinc-800 bg-zinc-950 px-4 h-14">
+        <button onClick={() => go({ view: "app" })} title="홈(분석 화면)으로"
+          className="mr-4 text-left outline-none focus-visible:ring-1 focus-visible:ring-sky-500 rounded">
+          <span className="block text-sm font-semibold tracking-tight text-zinc-50">LSI 불량 분석</span>
+          <span className="block text-[11px] text-zinc-400">과거 해결 사례 기반 근본원인 추천</span>
         </button>
+        {navItem("app", "◎", "분석", "미해결 이슈의 근본원인·해결책 추천")}
+        {status?.ready && navItem("dashboard", "▤", "지식 현황", "KB 구성·품질·중복·모순·공백·효능")}
         {status?.ready && !showOnboarding && (
-          <div className="ml-auto flex items-center gap-2">
-            <button onClick={() => { setView(view === "rca" ? "app" : "rca"); loadPending(); }}
-              title="RCA 댓글 승인 대기 (HITL)"
-              className={`px-2 py-0.5 rounded ${view === "rca" ? "bg-indigo-600 text-white" : "text-slate-300 hover:text-white"}`}>
-              📤 승인 대기{pending > 0 ? ` ${pending}` : ""}
-            </button>
-            <button onClick={() => setView(view === "voc" ? "app" : "voc")}
-              title="서비스 의견 (VOC)"
-              className={`px-2 py-0.5 rounded ${view === "voc" ? "bg-indigo-600 text-white" : "text-slate-300 hover:text-white"}`}>
-              💬 VOC
-            </button>
-            <button onClick={() => setForceCfg(true)} title="설정 변경"
-              className="text-slate-400 hover:text-white px-2">⚙️ 설정</button>
+          <div className="ml-auto flex items-center gap-1">
+            {can("rca.read") && navItem("rca", "↗", "승인 대기", "RCA 댓글 승인 대기 (HITL)",
+              () => { go({ view: route.view === "rca" ? "app" : "rca" }); loadPending(); }, pending)}
+            {can("voc.manage") && navItem("voc", "✎", "VOC", "서비스 의견 (VOC)",
+              () => go({ view: route.view === "voc" ? "app" : "voc" }))}
+            {isAdmin && navItem("settings", "⚙", "설정", "설정 변경")}
+            {me && (
+              <div className="ml-2 flex items-center gap-2 border-l border-zinc-800 pl-3">
+                <RoleBadge me={me} />
+                <span className="max-w-[140px] truncate text-[11px] text-zinc-400"
+                  title={me.subject}>{me.name || me.subject}</span>
+                {me.via !== "disabled" && (
+                  <button onClick={logout} title="로그아웃"
+                    className="text-[11px] text-zinc-400 underline decoration-dotted underline-offset-2 hover:text-sky-400">
+                    로그아웃
+                  </button>
+                )}
+              </div>
+            )}
           </div>
         )}
       </nav>
       <div className="flex-1 min-h-0">
-        {status === undefined ? (
-          <div className="h-full flex items-center justify-center text-slate-400 text-sm">설정 확인 중…</div>
+        {authLoading ? (
+          <div className="h-full flex items-center justify-center text-zinc-400 text-sm">인증 확인 중…</div>
+        ) : !me ? (
+          <LoginScreen cfg={cfg} onDone={() => { reloadAuth(); load(); loadPending(); }} />
+        ) : status === undefined ? (
+          <div className="h-full flex items-center justify-center text-zinc-400 text-sm">설정 확인 중…</div>
         ) : showOnboarding ? (
-          <Onboarding status={status} onDone={load} />
-        ) : view === "rca" ? (
-          <RcaQueue onBack={() => { setView("app"); loadPending(); }} onChange={loadPending} />
-        ) : view === "voc" ? (
-          <VocPage onBack={() => setView("app")} />
+          <Onboarding status={status} onDone={() => load(true)} myEmail={me?.subject ?? ""} authReady={!!status?.ready} />
+        ) : route.view === "rca" ? (
+          <RcaQueue onBack={() => { go({ view: "app" }); loadPending(); }} onChange={loadPending} />
+        ) : route.view === "voc" ? (
+          <VocPage onBack={() => go({ view: "app" })} />
+        ) : route.view === "dashboard" ? (
+          <Dashboard onOpenIssue={(key) => go({ view: "app", key })} can={can} />
         ) : (
-          <FailureAnalysis onQueueChange={loadPending} />
+          <FailureAnalysis
+            onQueueChange={loadPending}
+            routeKey={route.view === "app" ? route.key : undefined}
+            onSelectKey={(key) => go({ view: "app", key }, false)}
+            jiraBase={jiraBase}
+          />
         )}
       </div>
     </div>
@@ -68,6 +127,8 @@ function Root() {
 
 createRoot(document.getElementById('root')!).render(
   <StrictMode>
-    <Root />
+    <AuthProvider>
+      <Shell />
+    </AuthProvider>
   </StrictMode>,
 )

@@ -11,26 +11,34 @@ from __future__ import annotations
 import json
 import os
 import sys
+import threading
+from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Optional
 
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT / "src"))
 
-from fastapi import FastAPI, HTTPException
+from fastapi import Depends, FastAPI, HTTPException, Request, Response
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import StreamingResponse
+from fastapi.responses import RedirectResponse, StreamingResponse
 from pydantic import BaseModel, Field
 
 from lang_validator import validate_and_fix  # noqa: E402
 from preprocess import parse_issue  # noqa: E402
 from recommender import Recommender, template_key  # noqa: E402
 import app_config  # noqa: E402
+import auth  # noqa: E402
+import oidc_sso  # noqa: E402
+import session  # noqa: E402
+import user_store  # noqa: E402
 from json_store import read_json, write_json_atomic  # noqa: E402
 from llm_headers import custom_headers  # noqa: E402  사내 게이트웨이 x-service-id/x-user-id
 
 # stdlib(반복되던 지연 import 일원화)
+import copy  # noqa: E402
 import datetime as _dt  # noqa: E402
+import time  # noqa: E402
 import re  # noqa: E402
 # 지식자산/자기개선 스토어 모듈 — 지연 import를 최상위로 일원화(순환 참조 없음)
 import failure_modes  # noqa: E402
@@ -39,6 +47,7 @@ import knowledge_export  # noqa: E402
 import knowledge_gaps  # noqa: E402
 import knowledge_store  # noqa: E402
 import lifecycle  # noqa: E402
+import llm_cache  # noqa: E402
 import negative_knowledge  # noqa: E402
 import ontology  # noqa: E402
 import ownership  # noqa: E402
@@ -53,7 +62,17 @@ app_config.load_into_env()
 
 # LLM 설명 생성 엔진: agno(OpenRouter HTTP) 단일.
 
-app = FastAPI(title="LSI Failure Analysis API")
+@asynccontextmanager
+async def _lifespan(_app: FastAPI):
+    _start_jira_poller()          # 정의는 아래 Jira 동기화 절 — 호출 시점에 해석된다
+    # 심층 분석 예열을 기동 직후 백그라운드로 — 첫 사용자가 기다리지 않게 한다.
+    # 이미 캐시에 있는 건 건너뛰므로 재기동 비용은 거의 없다.
+    threading.Timer(3.0, _start_prewarm).start()
+    yield
+    _stop_jira_poller()
+
+
+app = FastAPI(title="LSI Failure Analysis API", lifespan=_lifespan)
 
 # ---------------------------------------------------------------------------
 # 추천 엔진 (과거 해결 이슈 → 미해결 이슈의 root-cause/해결책 제안)
@@ -62,12 +81,36 @@ ALL_RAW = ROOT / "data" / "all_raw_issues.json"
 RESOLVED_STATUS = "완료"
 
 _RECO_STATE: dict = {}
+# 빌드 락 — 백그라운드 Jira 폴러가 무효화하고 요청 스레드가 재빌드하므로 경합이 잦다.
+# 락이 없으면 (a) 동시 요청이 각자 전체 재빌드(수 초)를 중복 수행하고,
+# (b) `if _RECO_STATE` 통과 직후 무효화가 끼어들면 빈 dict가 반환된다.
+_RECO_LOCK = threading.Lock()
+
+
+def _invalidate_reco() -> None:
+    """KB 캐시 무효화 — 다음 _reco_state()에서 재빌드.
+
+    dict를 제자리에서 비우지 않고 새 dict로 교체한다. 읽는 쪽은 항상 '완전한 예전
+    상태' 아니면 '빈 상태'만 보게 되어, 반쯤 지워진 dict를 잡는 경우가 없다.
+    """
+    global _RECO_STATE
+    _RECO_STATE = {}
 
 
 def _reco_state() -> dict:
     """all_raw_issues.json 로드 → 레코드 파싱 → recommender(해결 KB) 1회 빌드(캐시)."""
-    if _RECO_STATE:
-        return _RECO_STATE
+    global _RECO_STATE
+    st = _RECO_STATE           # 지역 참조로 고정 — 이후 무효화에 영향받지 않는다
+    if st:
+        return st
+    with _RECO_LOCK:
+        if _RECO_STATE:        # 락 대기 중 다른 스레드가 빌드를 마쳤다
+            return _RECO_STATE
+        return _build_reco_state()
+
+
+def _build_reco_state() -> dict:
+    global _RECO_STATE
     if not ALL_RAW.exists():
         raise RuntimeError(
             "data/all_raw_issues.json 없음 — 먼저 실행: "
@@ -98,7 +141,7 @@ def _reco_state() -> dict:
             records = records + curated
     except Exception:
         pass
-    _RECO_STATE.update({
+    new_state = {
         "records": records,
         "by_key": {r["key"]: r for r in records},
         "resolved": resolved,
@@ -121,15 +164,261 @@ def _reco_state() -> dict:
             **{kw: float(os.environ[env]) for kw, env in
                (("gate_cos", "RVP_GATE_COS"), ("boost", "RVP_BOOST")) if os.getenv(env)},
         ),
-    })
-    return _RECO_STATE
+    }
+    _RECO_STATE = new_state
+    return new_state
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    # 쿠키 세션을 쓰므로 자격증명 허용이 필요하고, 그러면 와일드카드 오리진은 못 쓴다
+    # (브라우저가 거부한다). 개발용 Vite 오리진을 기본 허용하고 RVP_CORS_ORIGINS 로 넓힌다.
+    allow_origins=[o for o in (os.getenv(
+        "RVP_CORS_ORIGINS",
+        "http://localhost:5173,http://127.0.0.1:5173,http://localhost:4173,http://127.0.0.1:4173",
+    ).split(",")) if o.strip()],
+    allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+# ---------------------------------------------------------------------------
+# 인증(SSO) · 인가(RBAC) — 관리자 / 사용자
+#
+# 세 경로를 지원한다:
+#   oidc  : 사내 IdP 인증 코드 플로우(PKCE). 백엔드가 코드를 교환·검증한다.
+#   proxy : 앞단 SSO 프록시가 검증한 이메일 헤더를 신뢰(RVP_SSO_EMAIL_HEADER).
+#   dev   : 로컬 개발용 수동 로그인(RVP_AUTH_DEV_LOGIN=1). 운영에서는 켜지 않는다.
+#
+# 인가 목록(users.yaml / RVP_ADMIN_EMAILS)이 아예 없으면 인증 비활성 = 전체 권한.
+# 기존 로컬 흐름을 깨지 않기 위한 것이고, 그 상태는 /auth/config 로 드러난다.
+# ---------------------------------------------------------------------------
+_USERS: dict[str, auth.User] | None = None
+_USERS_LOADED = False
+
+
+def _users() -> dict[str, auth.User] | None:
+    global _USERS, _USERS_LOADED
+    if not _USERS_LOADED:
+        _USERS = auth.load_users()
+        _USERS_LOADED = True
+        st = auth.auth_status(_USERS)
+        print(f"[auth] {'활성' if st['enabled'] else '비활성(전체 권한)'} · "
+              f"users_file={'있음' if st['users_file_present'] else '없음'} · "
+              f"admin_env={st['admin_emails_env']} · 기본역할={st['default_role']}")
+    return _USERS
+
+
+def _reload_users() -> None:
+    global _USERS_LOADED
+    _USERS_LOADED = False
+    _users()
+
+
+def _proxy_email(request: Request) -> str:
+    """앞단 SSO 프록시가 넣어 준 이메일 헤더. 헤더 이름이 설정돼야만 신뢰한다.
+
+    기본값을 두지 않는 이유: 임의의 클라이언트가 그 헤더를 직접 보내면 신원을
+    가로챌 수 있다. 프록시 뒤에 있다는 사실을 배포자가 명시해야만 켜진다.
+    """
+    name = os.getenv("RVP_SSO_EMAIL_HEADER", "").strip()
+    return request.headers.get(name, "") if name else ""
+
+
+def current_user(request: Request) -> auth.User | None:
+    """요청의 신원. 인증 비활성이면 ALL_ACCESS, 미인증이면 None."""
+    users = _users()
+    if users is None:
+        return auth.ALL_ACCESS
+    tok = request.cookies.get(session.COOKIE_NAME, "")
+    body = session.verify(tok) if tok else None
+    if body:
+        # sub 가 정식 키. email 은 이전 형식(아이디 계정은 email 이 비어 있어 쓸 수 없다).
+        ident = str(body.get("sub") or body.get("email") or "")
+        u = auth.resolve_email(users, ident, via=str(body.get("via", "oidc")))
+        if u is not None:
+            return u                          # 쿠키가 있어도 인가 목록이 기준이다
+    email = _proxy_email(request)
+    if email:
+        return auth.resolve_email(users, email, via="proxy")
+    return None
+
+
+def require(capability: str):
+    """해당 기능 권한이 있어야 통과하는 의존성.
+
+    401(미인증)과 403(권한 없음)을 구분한다 — 프런트가 로그인 유도와 권한 안내를
+    다르게 처리해야 한다.
+    """
+    def dep(request: Request) -> auth.User:
+        u = current_user(request)
+        if u is None:
+            raise HTTPException(status_code=401, detail="로그인이 필요합니다")
+        if not u.can(capability):
+            raise HTTPException(
+                status_code=403,
+                detail=f"권한 없음: 이 작업에는 '{capability}' 권한이 필요합니다 (현재 역할: {u.role})")
+        return u
+    return dep
+
+
+@app.get("/auth/config")
+def auth_config():
+    """로그인 화면이 필요한지, 어떤 경로가 열려 있는지 — 인증 전에도 볼 수 있어야 한다."""
+    oidc = oidc_sso.settings_from_env()
+    return {
+        **auth.auth_status(_users()),
+        "modes": {
+            "oidc": oidc.enabled,
+            "proxy": bool(os.getenv("RVP_SSO_EMAIL_HEADER", "").strip()),
+            "dev": os.getenv("RVP_AUTH_DEV_LOGIN", "0") == "1",
+        },
+        "oidc_discovery": oidc.discovery_url,
+    }
+
+
+@app.get("/auth/me")
+def auth_me(request: Request):
+    u = current_user(request)
+    if u is None:
+        raise HTTPException(status_code=401, detail="로그인이 필요합니다")
+    return u.public()
+
+
+@app.get("/auth/login")
+def auth_login(next: str = ""):
+    """IdP 로그인 화면으로 리다이렉트."""
+    st = oidc_sso.settings_from_env()
+    if not st.enabled:
+        raise HTTPException(status_code=503,
+                            detail="SSO(OIDC)가 설정되지 않았습니다 — RVP_OIDC_* 를 확인하세요")
+    try:
+        url = oidc_sso.authorization_url(st, next_url=next)
+    except oidc_sso.SsoError as e:
+        raise HTTPException(status_code=502, detail=str(e))
+    return RedirectResponse(url, status_code=302)
+
+
+@app.get("/auth/callback")
+def auth_callback(code: str = "", state: str = "", error: str = "",
+                  error_description: str = ""):
+    """IdP 콜백 — 코드 교환 → id_token 검증 → 인가 → 세션 쿠키."""
+    st = oidc_sso.settings_from_env()
+    if error:
+        raise HTTPException(status_code=401, detail=f"IdP 로그인 실패: {error} {error_description}".strip())
+    pending = oidc_sso.pop_pending(state)
+    if pending is None:
+        # state 는 1회용 + 만료됨. 재사용·위조·시간초과를 구분해 알려 주지 않는다.
+        raise HTTPException(status_code=400, detail="로그인 요청이 만료되었거나 유효하지 않습니다 — 다시 시도하세요")
+    try:
+        tok = oidc_sso.exchange_code(st, code, pending.verifier)
+        claims = oidc_sso.verify_id_token(st, tok.get("id_token", ""))
+    except oidc_sso.SsoError as e:
+        raise HTTPException(status_code=401, detail=str(e))
+    email = oidc_sso.email_from_claims(st, claims)
+    u = auth.resolve_email(_users(), email, via="oidc")
+    if u is None:
+        raise HTTPException(status_code=403,
+                            detail=f"{email or '(이메일 없음)'} 은 이 서비스에 인가되지 않았습니다 — 관리자에게 요청하세요")
+    dest = pending.next_url or st.post_login_url or "/"
+    resp = RedirectResponse(dest, status_code=302)
+    # IdP 토큰은 담지 않는다 — 검증 결과(이메일)만 남긴다.
+    resp.set_cookie(session.COOKIE_NAME,
+                    session.issue({"sub": u.subject, "via": "oidc"}),
+                    **session.cookie_kwargs())
+    print(f"[auth] 로그인 {u.email} · 역할 {u.role} · via oidc")
+    return resp
+
+
+class DevLoginBody(BaseModel):
+    email: str
+
+
+@app.post("/auth/dev-login")
+def auth_dev_login(body: DevLoginBody, response: Response):
+    """로컬 개발용 로그인 — RVP_AUTH_DEV_LOGIN=1 일 때만 열린다.
+
+    인가 목록에 있는 이메일만 받는다. IdP 없이 역할 분리를 확인하기 위한 통로이고,
+    운영에서 켜면 이메일만 알면 누구나 그 역할이 되므로 기본값은 꺼짐이다.
+    """
+    if os.getenv("RVP_AUTH_DEV_LOGIN", "0") != "1":
+        raise HTTPException(status_code=404, detail="개발용 로그인이 비활성입니다")
+    users = _users()
+    if users is None:
+        raise HTTPException(status_code=400,
+                            detail="인가 목록이 없어 인증이 비활성 상태입니다(이미 전체 권한)")
+    u = users.get(auth.normalize_id(body.email))
+    if u is None:
+        raise HTTPException(status_code=403, detail="인가 목록에 없는 이메일입니다")
+    response.set_cookie(session.COOKIE_NAME,
+                        session.issue({"sub": u.subject, "via": "dev"}),
+                        **session.cookie_kwargs())
+    print(f"[auth] 개발 로그인 {u.email} · 역할 {u.role}")
+    return {**u.public(), "via": "dev"}
+
+
+@app.post("/auth/logout")
+def auth_logout(response: Response):
+    response.delete_cookie(session.COOKIE_NAME, path="/")
+    return {"ok": True}
+
+
+@app.post("/auth/reload")
+def auth_reload(_u: auth.User = Depends(require("config.write"))):
+    """users.yaml 을 다시 읽는다 — 사용자 추가 후 재기동하지 않기 위함."""
+    _reload_users()
+    return {"ok": True, **auth.auth_status(_users())}
+
+
+# ---------------------------------------------------------------------------
+# 사용자 관리 (관리자 전용) — 설정 화면의 "사용자 관리"
+#
+# 목록을 고친 뒤에는 곧바로 다시 읽는다(_reload_users). 그러지 않으면 방금 등록한
+# 사람이 다음 재기동까지 로그인하지 못한다.
+# ---------------------------------------------------------------------------
+class UserUpsertBody(BaseModel):
+    email: str
+    name: str = ""
+    role: str = "user"
+
+
+class UserRevokeBody(BaseModel):
+    email: str
+    revoked: bool = True
+
+
+@app.get("/auth/users")
+def auth_users(_u: auth.User = Depends(require("config.write"))):
+    try:
+        return user_store.listing()
+    except user_store.UserStoreError as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/auth/users")
+def auth_users_upsert(body: UserUpsertBody,
+                      u: auth.User = Depends(require("config.write"))):
+    """사용자·관리자 등록(또는 역할 변경). 회수 상태였다면 함께 복구된다."""
+    try:
+        out = user_store.upsert(body.email, body.name, body.role, actor=u.email or u.subject)
+    except user_store.UserStoreError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    _reload_users()
+    return {"ok": True, **out, "auth": auth.auth_status(_users())}
+
+
+@app.post("/auth/users/revoke")
+def auth_users_revoke(body: UserRevokeBody,
+                      u: auth.User = Depends(require("config.write"))):
+    """권한 회수/복구. 자기 자신을 회수하는 것은 막는다 — 실수로 잠기는 경로다."""
+    if auth.normalize_id(body.email) == auth.normalize_id(u.subject) and body.revoked:
+        raise HTTPException(status_code=400,
+                            detail="자기 자신의 권한은 회수할 수 없습니다 — 다른 관리자에게 요청하세요.")
+    try:
+        out = user_store.revoke(body.email, body.revoked, actor=u.email or u.subject)
+    except user_store.UserStoreError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    _reload_users()
+    return {"ok": True, **out, "auth": auth.auth_status(_users())}
 
 
 @app.get("/health")
@@ -145,19 +434,19 @@ class ConfigBody(BaseModel):
     llm: Optional[dict] = None        # {gateway_url, api_key, model} → OpenRouter(agno)
 
 
-@app.get("/config/status")
+@app.get("/config/status", dependencies=[Depends(require("issue.read"))])
 def config_status():
     return app_config.status()
 
 
-@app.post("/config")
+@app.post("/config", dependencies=[Depends(require("config.write"))])
 def config_save(body: ConfigBody):
     st = app_config.save(body.jira, body.llm)
-    _RECO_STATE.clear()  # Jira 변경 반영 위해 KB 캐시 무효화
+    _invalidate_reco()  # Jira 변경 반영 위해 KB 캐시 무효화
     return st
 
 
-@app.post("/config/test/jira")
+@app.post("/config/test/jira", dependencies=[Depends(require("config.write"))])
 def config_test_jira(body: ConfigBody):
     import requests
     j = body.jira or {}
@@ -186,7 +475,7 @@ def config_test_jira(body: ConfigBody):
         return {"ok": False, "error": str(e)[:200]}
 
 
-@app.post("/config/test/llm")
+@app.post("/config/test/llm", dependencies=[Depends(require("config.write"))])
 def config_test_llm(body: ConfigBody):
     """OpenRouter(agno) 연결 테스트 — /models 조회."""
     import requests
@@ -252,10 +541,96 @@ def jira_webhook(body: dict, secret: str = ""):
             from ingest import fetch_issue
             n = _upsert_raw_issue(fetch_issue(key))
             action = "upserted"
-        _RECO_STATE.clear()                     # 다음 요청 시 갱신된 KB로 재빌드
+        _invalidate_reco()                     # 다음 요청 시 갱신된 KB로 재빌드
         return {"ok": True, "action": action, "key": key, "event": event, "kb_total": n}
     except Exception as e:
         return {"ok": False, "error": str(e)[:200], "key": key, "event": event}
+
+
+# ---------------------------------------------------------------------------
+# Jira 폴링 동기화 — 웹훅과 같은 결과를 공개 URL 없이 얻는 경로.
+# Jira Cloud가 로컬 서버에 도달할 수 없는 환경에서 기본 갱신 수단으로 쓴다.
+# 웹훅을 등록해 두면 둘 다 동작해도 무해하다(같은 upsert를 중복 수행할 뿐).
+# ---------------------------------------------------------------------------
+_JIRA_POLL: dict = {"thread": None, "stop": None, "last": None, "error": None,
+                    "started_at": None, "polls": 0, "invalidations": 0}
+
+
+def _jira_poll_loop(interval: int, stop: threading.Event) -> None:
+    import jira_sync
+    while not stop.wait(interval):            # 첫 폴도 interval 후 — 기동을 막지 않는다
+        try:
+            r = jira_sync.sync()
+            _JIRA_POLL["last"] = r
+            _JIRA_POLL["error"] = None
+            _JIRA_POLL["polls"] += 1
+            # 변경이 있을 때만 무효화 — 무효화는 전체 재빌드(임베딩 캐시 미스 시 수 초)를
+            # 부르므로 빈 폴에서 지불하면 순손해다.
+            if r.get("changed"):
+                _invalidate_reco()
+                _JIRA_POLL["invalidations"] += 1
+                print(f"[jira_poll] KB 갱신 {r} → 추천 캐시 무효화")
+                # 바뀐 이슈만 키가 달라지므로, 예열을 다시 돌려도 나머지는 건너뛴다.
+                _start_prewarm()
+        except Exception as e:
+            _JIRA_POLL["error"] = str(e)[:200]
+            print(f"[jira_poll] 실패(다음 주기에 재시도): {str(e)[:160]}")
+
+
+def _start_jira_poller() -> None:
+    """RVP_JIRA_POLL_SEC 주기로 백그라운드 폴링 시작. 0 이면 비활성.
+
+    기본 5초 근거(실측 2026-08-01): 무변경 폴 1회 = JQL 1건 240ms(중앙), 삭제 대조
+    포함 회차 780ms. 5초면 하루 17,280회 — 폴 하나가 주기의 5%만 점유하므로 Jira
+    레이트 리밋 대비 여유가 크고, 평균 반영 지연 2.5초(최악 5초).
+    이보다 짧게 가려면 폴링이 아니라 웹훅(공개 URL 필요)으로 바꿔야 한다.
+    """
+    interval = int(os.getenv("RVP_JIRA_POLL_SEC", "5") or 0)
+    if interval <= 0 or not os.getenv("JIRA_BASE_URL"):
+        print("[jira_poll] 비활성 (RVP_JIRA_POLL_SEC=0 또는 JIRA_BASE_URL 없음)")
+        return
+    stop = threading.Event()
+    t = threading.Thread(target=_jira_poll_loop, args=(interval, stop),
+                         name="jira-poll", daemon=True)
+    _JIRA_POLL.update({"thread": t, "stop": stop,
+                       "started_at": _dt.datetime.now().isoformat(timespec="seconds")})
+    t.start()
+    print(f"[jira_poll] {interval}초 주기 폴링 시작")
+
+
+def _stop_jira_poller() -> None:
+    stop = _JIRA_POLL.get("stop")
+    if stop:
+        stop.set()
+
+
+@app.get("/jira/sync/status", dependencies=[Depends(require("issue.read"))])
+def jira_sync_status():
+    """폴러 상태 + 마지막 동기화 결과."""
+    import jira_sync
+    return {
+        "poll_interval_sec": int(os.getenv("RVP_JIRA_POLL_SEC", "5") or 0),
+        "running": bool(_JIRA_POLL["thread"] and _JIRA_POLL["thread"].is_alive()),
+        "started_at": _JIRA_POLL["started_at"],
+        "polls": _JIRA_POLL["polls"],
+        "invalidations": _JIRA_POLL["invalidations"],
+        "last": _JIRA_POLL["last"],
+        "error": _JIRA_POLL["error"],
+        "state": jira_sync.load_state(),
+    }
+
+
+@app.post("/jira/sync", dependencies=[Depends(require("ops.sync"))])
+def jira_sync_now(full: bool = False, reconcile: bool = False):
+    """수동 동기화 — 폴 주기를 기다리지 않고 즉시 반영."""
+    import jira_sync
+    try:
+        r = jira_sync.sync(full=full, reconcile=reconcile)
+    except Exception as e:
+        raise HTTPException(status_code=502, detail=f"Jira 동기화 실패: {str(e)[:200]}")
+    if r.get("changed"):
+        _invalidate_reco()
+    return {"ok": True, **r}
 
 
 # ---------------------------------------------------------------------------
@@ -274,7 +649,7 @@ class RecommendRequest(BaseModel):
     explain: bool = False              # LLM으로 종합 설명 생성
 
 
-@app.get("/reco/stats")
+@app.get("/reco/stats", dependencies=[Depends(require("issue.read"))])
 def reco_stats():
     st = _reco_state()
     reco = st["reco"]
@@ -300,7 +675,7 @@ class RecoFeedbackBody(BaseModel):
     note: str = ""
 
 
-@app.post("/reco/feedback")
+@app.post("/reco/feedback", dependencies=[Depends(require("feedback.write"))])
 def reco_feedback_record(req: RecoFeedbackBody):  # 함수명: 모듈 reco_feedback과 충돌 회피
     """추천 유용성/결과 피드백 기록(P1-3) — 도움됨·아님, 실제 근본원인 여부."""
     try:
@@ -315,7 +690,7 @@ def reco_feedback_record(req: RecoFeedbackBody):  # 함수명: 모듈 reco_feedb
         return {"ok": False, "error": str(e)}
 
 
-@app.get("/reco/feedback/stats")
+@app.get("/reco/feedback/stats", dependencies=[Depends(require("knowledge.read"))])
 def reco_feedback_stats():
     """유용성 집계 + ROI 프록시 + 실전형 평가셋 정답 쌍."""
     return {"stats": reco_feedback.stats(), "eval_pairs": reco_feedback.eval_pairs()}
@@ -331,7 +706,7 @@ class VocBody(BaseModel):
     context: str = ""            # 어느 화면/맥락에서 남겼는지(선택)
 
 
-@app.post("/voc")
+@app.post("/voc", dependencies=[Depends(require("feedback.write"))])
 def voc_submit(req: VocBody):
     """VOC 등록(버그·개선요청·칭찬·문의)."""
     import voc_store
@@ -343,7 +718,7 @@ def voc_submit(req: VocBody):
         return {"ok": False, "error": str(e)}
 
 
-@app.get("/voc")
+@app.get("/voc", dependencies=[Depends(require("voc.manage"))])
 def voc_list(state: str = ""):
     """VOC 목록 + 집계."""
     import voc_store
@@ -355,7 +730,7 @@ class VocStateBody(BaseModel):
     state: str                   # open | triaged | resolved | wont_fix
 
 
-@app.post("/voc/state")
+@app.post("/voc/state", dependencies=[Depends(require("voc.manage"))])
 def voc_set_state(req: VocStateBody):
     """VOC 상태 변경(분류/해결/보류)."""
     import voc_store
@@ -366,7 +741,7 @@ def voc_set_state(req: VocStateBody):
         return {"ok": False, "error": str(e)}
 
 
-@app.get("/issues/unresolved")
+@app.get("/issues/unresolved", dependencies=[Depends(require("issue.read"))])
 def unresolved_issues():
     st = _reco_state()
     out = []
@@ -382,7 +757,7 @@ def unresolved_issues():
     return {"count": len(out), "issues": out}
 
 
-@app.get("/graph")
+@app.get("/graph", dependencies=[Depends(require("issue.read"))])
 def issue_graph(key: Optional[str] = None, k: int = 12, min_shared: int = 2):
     """이슈 간 관계 그래프 — 공유 엔티티(칩/분류/기술용어/라벨) 기반.
 
@@ -511,11 +886,17 @@ def _llm_explain(query_rec: dict, matches: list[dict]) -> dict:
     agno output_schema 로 구조화 출력 → cited_keys 를 매치 키와 대조 검증해
     환각 인용을 제거(기존 정규식 인용 게이트를 구조적으로 대체).
     """
+    model = os.getenv("RVP_MODEL") or os.getenv("OPENROUTER_MODEL", "")
+    ckey = llm_cache.make_key("explain_struct", query_rec, matches, model)
+    hit = llm_cache.get(ckey)
+    if hit is not None:
+        return {**hit, "cached": True}
     prompt = _explain_prompt(query_rec, matches)
     valid_keys = {m["key"] for m in matches}
     try:
         exp = _agno_explain(prompt)
     except Exception as e:
+        # 실패는 캐시하지 않는다 — 일시적 오류를 영구히 되돌려주게 된다.
         return {"markdown": f"(LLM 설명 생성 실패: {e})", "citations": [], "dropped": []}
     if exp is None:
         return {"markdown": "", "citations": [], "dropped": []}
@@ -523,7 +904,10 @@ def _llm_explain(query_rec: dict, matches: list[dict]) -> dict:
     vr = validate_and_fix(md)  # CJK 안전망
     if not vr.ok and vr.rewritten:
         md = vr.rewritten
-    return {"markdown": md, "citations": cited, "dropped": dropped}
+    out = {"markdown": md, "citations": cited, "dropped": dropped}
+    llm_cache.put(ckey, out, meta={"query_key": query_rec.get("key", ""),
+                                   "evidence": [m.get("key", "") for m in matches]})
+    return {**out, "cached": False}
 
 
 def _case_block(r: dict) -> str:
@@ -628,37 +1012,103 @@ def _llm_stream(prompt: str, reasoning: bool = False):
                 yield piece
 
 
-@app.get("/recommend/explain/stream")
+# 검색 결과 캐시 — 같은 질의에 임베딩·rerank API를 두 번 지불하지 않기 위함.
+# KB가 바뀌면 _RECO_STATE 가 통째로 교체되므로, 캐시도 그 상태 객체에 매달아 둔다
+# (상태가 새로 만들어지면 캐시도 자연히 비워진다). 크기는 작게 유지 — 목적은
+# "방금 본 이슈를 곧바로 다시 조회하는" 경로를 없애는 것이지 장기 보관이 아니다.
+_RECO_CACHE_MAX = 64
+
+
+def _recommend_cached(query_rec: dict, k: int, exclude_key: Optional[str]) -> dict:
+    st = _reco_state()
+    cache: dict = st.setdefault("_reco_cache", {})
+    ck = (query_rec.get("key") or "", k, exclude_key or "",
+          "" if query_rec.get("key") else llm_cache.issue_fingerprint(query_rec))
+    hit = cache.get(ck)
+    if hit is None:
+        hit = st["reco"].recommend(query_rec, k=k, exclude_key=exclude_key)
+        if len(cache) >= _RECO_CACHE_MAX:
+            cache.clear()                   # 단순 비우기 — LRU를 둘 만큼 크지 않다
+        cache[ck] = hit
+    # 사본을 준다 — 호출측이 matches 에 주석(known_issue·lifecycle 경고 등)을 덧붙이므로
+    # 캐시 원본을 그대로 넘기면 조회할 때마다 주석이 겹쳐 쌓인다.
+    return copy.deepcopy(hit)
+
+
+def _explain_md_cached(query_rec: dict, match_recs: list[dict]) -> dict | None:
+    """심층 분석(마크다운) 캐시 조회. 키는 질의·근거의 내용에서 나온다."""
+    model = os.getenv("RVP_MODEL") or os.getenv("OPENROUTER_MODEL", "")
+    key = llm_cache.make_key("explain_md", query_rec, match_recs, model,
+                             extra=os.getenv("RVP_EXPLAIN_REASONING", "0"))
+    return llm_cache.get(key)
+
+
+def _explain_md_store(query_rec: dict, match_recs: list[dict], value: dict) -> None:
+    model = os.getenv("RVP_MODEL") or os.getenv("OPENROUTER_MODEL", "")
+    key = llm_cache.make_key("explain_md", query_rec, match_recs, model,
+                             extra=os.getenv("RVP_EXPLAIN_REASONING", "0"))
+    llm_cache.put(key, value, meta={"query_key": query_rec.get("key", ""),
+                                    "evidence": [r.get("key", "") for r in match_recs]})
+
+
+def _generate_explain_md(query_rec: dict, match_recs: list[dict]):
+    """심층 분석을 생성하며 토큰을 흘려보낸다(제너레이터). 완료 시 캐시에 저장.
+
+    반환 제너레이터는 문자열 조각을 yield 하고, 끝나면 캐시에 완성본을 넣는다.
+    """
+    prompt = _explain_prompt_md(query_rec, match_recs)
+    reasoning = os.getenv("RVP_EXPLAIN_REASONING", "0") == "1"
+    valid = {r.get("key") for r in match_recs}
+    acc: list[str] = []
+    for delta in _llm_stream(prompt, reasoning=reasoning):
+        acc.append(delta)
+        yield delta
+    full = "".join(acc)
+    if full.strip():
+        cited = sorted({m for m in re.findall(r"LSI-\d+", full)} & valid)
+        _explain_md_store(query_rec, match_recs, {"markdown": full, "citations": cited})
+
+
+@app.get("/recommend/explain/stream", dependencies=[Depends(require("reco.read"))])
 def explain_stream(key: Optional[str] = None, summary: str = "", symptom: str = "",
-                   chip: str = "", category: str = "", k: int = 4):
+                   chip: str = "", category: str = "", k: int = 4, refresh: bool = False):
     """LLM 종합 분석 SSE 스트리밍 — 본문은 토큰 단위로, 인용 검증은 완료 시.
 
-    이벤트: {type:delta,text} 반복 → {type:done,citations,dropped} | {type:error,message}.
+    이벤트: {type:delta,text} 반복 → {type:done,citations,cached} | {type:error,message}.
+
+    질의·근거가 그대로면 캐시본을 즉시 흘려보낸다(LLM 호출 0회). refresh=1 로 무시.
     """
     st = _reco_state()
     query_rec = (st["by_key"].get(key) if key else None) or {
         "summary": summary, "symptom": symptom, "chip": chip, "category": category, "labels": []}
-    result = st["reco"].recommend(query_rec, k=k, exclude_key=key)
+    # 앞선 /recommend 와 같은 인자면 재계산하지 않는다 — 예전에는 사용자 상호작용
+    # 한 번에 검색(임베딩+rerank API)을 두 번 지불했다.
+    result = _recommend_cached(query_rec, k=k, exclude_key=key)
     matches = result["matches"]
     coverage = result.get("coverage", bool(matches))
+    match_recs = [st["by_key"].get(m["key"], m) for m in matches]
 
     def gen():
         if not matches or not coverage:
             yield f"data: {json.dumps({'type': 'done', 'citations': [], 'no_coverage': True}, ensure_ascii=False)}\n\n"
             return
-        valid = {m["key"] for m in matches}
-        # 근거 컨텍스트 강화: 매치를 전체 레코드(증상/디버깅 접근 포함)로 확장
-        match_recs = [st["by_key"].get(m["key"], m) for m in matches]
-        prompt = _explain_prompt_md(query_rec, match_recs)
-        reasoning = os.getenv("RVP_EXPLAIN_REASONING", "0") == "1"
-        acc: list[str] = []
         try:
-            for delta in _llm_stream(prompt, reasoning=reasoning):
+            hit = None if refresh else _explain_md_cached(query_rec, match_recs)
+            if hit:
+                # 캐시본도 델타로 흘려보낸다 — 프론트의 SSE 처리 경로를 하나로 유지.
+                md = hit.get("markdown", "")
+                for i in range(0, len(md), 400):
+                    yield f"data: {json.dumps({'type': 'delta', 'text': md[i:i + 400]}, ensure_ascii=False)}\n\n"
+                yield f"data: {json.dumps({'type': 'done', 'citations': hit.get('citations', []), 'cached': True}, ensure_ascii=False)}\n\n"
+                return
+            acc: list[str] = []
+            for delta in _generate_explain_md(query_rec, match_recs):
                 acc.append(delta)
                 yield f"data: {json.dumps({'type': 'delta', 'text': delta}, ensure_ascii=False)}\n\n"
             full = "".join(acc)
+            valid = {m["key"] for m in matches}
             cited = sorted({m for m in re.findall(r"LSI-\d+", full)} & valid)
-            yield f"data: {json.dumps({'type': 'done', 'citations': cited}, ensure_ascii=False)}\n\n"
+            yield f"data: {json.dumps({'type': 'done', 'citations': cited, 'cached': False}, ensure_ascii=False)}\n\n"
         except Exception as e:
             yield f"data: {json.dumps({'type': 'error', 'message': str(e)[:200]}, ensure_ascii=False)}\n\n"
 
@@ -666,7 +1116,95 @@ def explain_stream(key: Optional[str] = None, summary: str = "", symptom: str = 
                              headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"})
 
 
-@app.post("/recommend")
+# ---------------------------------------------------------------------------
+# 심층 분석 예열(prewarm) — 사용자가 누르기 전에 미리 만들어 둔다.
+#
+# 캐시만 두면 "처음 여는 이슈"는 여전히 수 초를 기다린다. 미해결 이슈는 목록이
+# 정해져 있으므로 백그라운드에서 미리 생성해 두면 첫 클릭도 즉시 뜬다.
+#
+# 비용이 있는 작업(이슈당 LLM 1회)이라 기본은 보수적으로 잡았다:
+#   · 이미 캐시에 있으면 건너뛴다(변화가 없으면 다시 만들지 않는다)
+#   · 한 번에 RVP_PREWARM_LIMIT 건까지, 사이에 텀을 둬 API를 몰아치지 않는다
+#   · RVP_PREWARM=0 이면 아예 돌지 않는다
+# ---------------------------------------------------------------------------
+_PREWARM: dict = {"thread": None, "running": False, "done": 0, "skipped": 0,
+                  "failed": 0, "total": 0, "last_key": "", "error": None,
+                  "finished_at": None}
+
+
+def _prewarm_once(limit: int, gap_sec: float, only_key: str = "") -> None:
+    st = _reco_state()
+    targets = [r for r in st["unresolved"] if not only_key or r["key"] == only_key]
+    _PREWARM.update({"running": True, "done": 0, "skipped": 0, "failed": 0,
+                     "total": min(len(targets), limit), "error": None, "finished_at": None})
+    try:
+        for rec in targets:
+            if _PREWARM["done"] + _PREWARM["skipped"] >= limit:
+                break
+            try:
+                res = _recommend_cached(rec, k=4, exclude_key=rec["key"])
+                if not res["matches"] or not res.get("coverage", True):
+                    _PREWARM["skipped"] += 1     # 게이트 미통과 → 원래도 생성 안 함
+                    continue
+                match_recs = [st["by_key"].get(m["key"], m) for m in res["matches"]]
+                if _explain_md_cached(rec, match_recs) is not None:
+                    _PREWARM["skipped"] += 1     # 이미 있음 — 변화가 없으니 그대로 둔다
+                    continue
+                for _ in _generate_explain_md(rec, match_recs):
+                    pass                          # 토큰은 버리고 캐시만 채운다
+                _PREWARM["done"] += 1
+                _PREWARM["last_key"] = rec["key"]
+                time.sleep(gap_sec)
+            except Exception as e:
+                _PREWARM["failed"] += 1
+                _PREWARM["error"] = f'{rec.get("key","")}: {str(e)[:120]}'
+    finally:
+        _PREWARM["running"] = False
+        _PREWARM["finished_at"] = _dt.datetime.now().isoformat(timespec="seconds")
+        print(f"[prewarm] 생성 {_PREWARM['done']} · 건너뜀 {_PREWARM['skipped']} "
+              f"· 실패 {_PREWARM['failed']}")
+
+
+def _start_prewarm(limit: int | None = None, only_key: str = "") -> bool:
+    """예열을 백그라운드로 시작. 이미 돌고 있으면 False."""
+    if _PREWARM["running"]:
+        return False
+    if os.getenv("RVP_PREWARM", "1") != "1" and not only_key:
+        return False
+    lim = limit if limit is not None else int(os.getenv("RVP_PREWARM_LIMIT", "20") or 0)
+    if lim <= 0:
+        return False
+    gap = float(os.getenv("RVP_PREWARM_GAP_SEC", "1.0") or 0)
+    t = threading.Thread(target=_prewarm_once, args=(lim, gap, only_key),
+                         name="explain-prewarm", daemon=True)
+    _PREWARM["thread"] = t
+    t.start()
+    return True
+
+
+@app.get("/explain/cache", dependencies=[Depends(require("knowledge.read"))])
+def explain_cache_stats():
+    """캐시 현황 + 예열 진행 상태."""
+    return {"cache": llm_cache.stats(),
+            "prewarm": {k: v for k, v in _PREWARM.items() if k != "thread"}}
+
+
+@app.post("/explain/prewarm", dependencies=[Depends(require("ops.cache"))])
+def explain_prewarm(limit: int = 0, key: str = ""):
+    """예열 수동 시작. limit=0 이면 환경변수 기본값, key 지정 시 그 이슈만."""
+    started = _start_prewarm(limit or None, only_key=key)
+    return {"ok": started,
+            "reason": "" if started else ("이미 실행 중" if _PREWARM["running"] else "비활성(RVP_PREWARM=0 또는 limit=0)"),
+            "prewarm": {k: v for k, v in _PREWARM.items() if k != "thread"}}
+
+
+@app.delete("/explain/cache", dependencies=[Depends(require("ops.cache"))])
+def explain_cache_clear():
+    """캐시 비우기 — 프롬프트를 바꿨는데 버전을 안 올렸을 때의 탈출구."""
+    return {"ok": True, "removed": llm_cache.clear()}
+
+
+@app.post("/recommend", dependencies=[Depends(require("reco.read"))])
 def recommend(req: RecommendRequest):
     st = _reco_state()
     if req.key:
@@ -680,8 +1218,9 @@ def recommend(req: RecommendRequest):
             "chip": req.chip or "", "category": req.category or "",
             "labels": req.labels or [],
         }
-    # 해결 이슈 키로 질의해도 자기 자신은 매치에서 제외
-    result = st["reco"].recommend(query_rec, k=req.k, exclude_key=req.key)
+    # 해결 이슈 키로 질의해도 자기 자신은 매치에서 제외.
+    # 캐시 경유 — 뒤이어 오는 explain 스트리밍이 같은 검색을 또 하지 않게 한다.
+    result = _recommend_cached(query_rec, k=req.k, exclude_key=req.key)
     # 매치에 메타(생성일·FW) 보강 — 수명주기 신선도/경고 산출용
     for m in result["matches"]:
         src = st["by_key"].get(m.get("key"), {})
@@ -851,7 +1390,7 @@ def _queue_result(saved: dict) -> dict:
             "item": saved, "counts": rca_queue.counts()}
 
 
-@app.post("/rca/draft")
+@app.post("/rca/draft", dependencies=[Depends(require("rca.draft"))])
 def rca_draft(req: KeyBody):
     """미해결 이슈에 대한 RCA 댓글 초안 생성 → 승인 큐(pending)에 적재. Jira 쓰기 없음."""
     st = _reco_state()
@@ -889,7 +1428,7 @@ class AnalysisDraftBody(BaseModel):
     citations: list[str] = []   # 검증된 인용 키
 
 
-@app.post("/rca/draft-from-analysis")
+@app.post("/rca/draft-from-analysis", dependencies=[Depends(require("rca.draft"))])
 def rca_draft_from_analysis(req: AnalysisDraftBody):
     """시니어 종합 분석(LLM)을 RCA 댓글 본문으로 → 승인 큐. 생성물이라 항상 검토 필요."""
     st = _reco_state()
@@ -919,7 +1458,7 @@ def rca_draft_from_analysis(req: AnalysisDraftBody):
     return _queue_result(rca_queue.upsert(item))
 
 
-@app.get("/rca/pending")
+@app.get("/rca/pending", dependencies=[Depends(require("rca.read"))])
 def rca_pending():
     return {"items": rca_queue.items("pending"), "counts": rca_queue.counts()}
 
@@ -929,7 +1468,7 @@ class ApproveBody(BaseModel):
     body: Optional[str] = None   # 사람이 수정한 본문(있으면 이걸 게시·기록)
 
 
-@app.post("/rca/approve")
+@app.post("/rca/approve", dependencies=[Depends(require("rca.approve"))])
 def rca_approve(req: ApproveBody):
     """HITL 게이트 — 사람 승인(+수정) 시에만 Jira에 게시. 수정 내용은 피드백에 기록."""
     item = rca_queue.get(req.key)
@@ -965,7 +1504,7 @@ def rca_approve(req: ApproveBody):
                 author=os.getenv("JIRA_EMAIL", ""), approved_at=now)
         except Exception:
             pass
-        _RECO_STATE.clear()  # KB 환류 반영 — 다음 요청 시 큐레이션 항목 포함해 재빌드
+        _invalidate_reco()  # KB 환류 반영 — 다음 요청 시 큐레이션 항목 포함해 재빌드
         return {"ok": True, "item": updated, "edited": original.strip() != final.strip(),
                 "counts": rca_queue.counts(), "feedback": rca_feedback.stats(),
                 "persisted": bool(persisted), "knowledge": knowledge_store.stats()}
@@ -973,7 +1512,7 @@ def rca_approve(req: ApproveBody):
         return {"ok": False, "error": str(e)[:200]}
 
 
-@app.get("/rca/feedback")
+@app.get("/rca/feedback", dependencies=[Depends(require("knowledge.read"))])
 def rca_feedback_stats():
     return {"stats": rca_feedback.stats(), "recent_edits": rca_feedback.recent_edits(5)}
 
@@ -981,13 +1520,13 @@ def rca_feedback_stats():
 # ---------------------------------------------------------------------------
 # 지식 자산 영속화·환류 (P1-1)
 # ---------------------------------------------------------------------------
-@app.get("/knowledge/stats")
+@app.get("/knowledge/stats", dependencies=[Depends(require("knowledge.read"))])
 def knowledge_stats():
     """영속 큐레이션 지식 저장소 현황(건수·출처·저장 경로)."""
     return {"knowledge": knowledge_store.stats()}
 
 
-@app.get("/knowledge/quality")
+@app.get("/knowledge/quality", dependencies=[Depends(require("knowledge.read"))])
 def knowledge_quality():
     """인입 KB 품질 리포트(P1-2) — 상태별 필드 충족률 + 무음 실패 의심 키."""
     st = _reco_state()
@@ -999,7 +1538,7 @@ def knowledge_quality():
 # ---------------------------------------------------------------------------
 # 고장모드(Known-Issue) 기사 계층 (P2-4)
 # ---------------------------------------------------------------------------
-@app.get("/knowledge/clusters")
+@app.get("/knowledge/clusters", dependencies=[Depends(require("knowledge.read"))])
 def knowledge_clusters(threshold: float = 0.80, min_size: int = 2):
     """해결 KB 임베딩 군집 → 고장모드 후보(중복 사례 묶음). 승격 검토용."""
     st = _reco_state()
@@ -1021,7 +1560,7 @@ class PromoteBody(BaseModel):
     article_id: str = ""             # 지정 시 기존 기사 갱신(멤버 합집합)
 
 
-@app.post("/knowledge/known-issue")
+@app.post("/knowledge/known-issue", dependencies=[Depends(require("knowledge.write"))])
 def knowledge_promote(req: PromoteBody):
     """후보 군집(또는 선택 사례)을 정규 Known-Issue 기사로 승격/갱신."""
     st = _reco_state()
@@ -1050,7 +1589,7 @@ def knowledge_promote(req: PromoteBody):
         return {"ok": False, "error": str(e)}
 
 
-@app.get("/knowledge/known-issues")
+@app.get("/knowledge/known-issues", dependencies=[Depends(require("knowledge.read"))])
 def knowledge_known_issues():
     """승격된 Known-Issue 기사 목록."""
     return {"articles": failure_modes.articles(), "stats": failure_modes.stats()}
@@ -1066,19 +1605,19 @@ class LifecycleBody(BaseModel):
     reason: str = ""
 
 
-@app.post("/knowledge/lifecycle")
+@app.post("/knowledge/lifecycle", dependencies=[Depends(require("knowledge.write"))])
 def knowledge_lifecycle(req: LifecycleBody):
     """사례 수명주기 상태 설정(폐기/대체). 폐기·대체 사례는 추천에서 강등·경고."""
     try:
         info = lifecycle.set_state(req.key, req.state,
                                    superseded_by=req.superseded_by, reason=req.reason)
-        _RECO_STATE.clear()
+        _invalidate_reco()
         return {"ok": True, "lifecycle": info, "stats": lifecycle.stats()}
     except ValueError as e:
         return {"ok": False, "error": str(e)}
 
 
-@app.get("/knowledge/lifecycle/stats")
+@app.get("/knowledge/lifecycle/stats", dependencies=[Depends(require("knowledge.read"))])
 def knowledge_lifecycle_stats():
     return {"stats": lifecycle.stats()}
 
@@ -1086,13 +1625,13 @@ def knowledge_lifecycle_stats():
 # ---------------------------------------------------------------------------
 # 온톨로지 거버넌스 (P2-6)
 # ---------------------------------------------------------------------------
-@app.get("/knowledge/ontology")
+@app.get("/knowledge/ontology", dependencies=[Depends(require("knowledge.read"))])
 def knowledge_ontology():
     """통제 어휘(동의어 그룹·통제 분류) 현황."""
     return {"vocab": ontology.vocab(), "stats": ontology.stats()}
 
 
-@app.get("/knowledge/ontology/review")
+@app.get("/knowledge/ontology/review", dependencies=[Depends(require("knowledge.read"))])
 def knowledge_ontology_review(top: int = 40):
     """통제 어휘에 없는 엔티티/분류를 빈도순으로 — canonical 승격 검토 큐."""
     st = _reco_state()
@@ -1105,12 +1644,12 @@ class SynonymBody(BaseModel):
     aliases: list[str] = []
 
 
-@app.post("/knowledge/ontology/synonym")
+@app.post("/knowledge/ontology/synonym", dependencies=[Depends(require("knowledge.write"))])
 def knowledge_ontology_synonym(req: SynonymBody):
     """동의어 그룹 추가/확장(alias→canonical). 다음 재빌드부터 엔티티 통합."""
     try:
         out = ontology.add_synonym(req.canonical, req.aliases)
-        _RECO_STATE.clear()  # 정규화 반영을 위해 KB 재빌드
+        _invalidate_reco()  # 정규화 반영을 위해 KB 재빌드
         return {"ok": True, "group": out, "stats": ontology.stats()}
     except ValueError as e:
         return {"ok": False, "error": str(e)}
@@ -1120,7 +1659,7 @@ class CategoriesBody(BaseModel):
     categories: list[str]
 
 
-@app.post("/knowledge/ontology/categories")
+@app.post("/knowledge/ontology/categories", dependencies=[Depends(require("knowledge.write"))])
 def knowledge_ontology_categories(req: CategoriesBody):
     """통제 분류 어휘 설정."""
     out = ontology.set_categories(req.categories)
@@ -1136,7 +1675,7 @@ class NegativeBody(BaseModel):
     reason: str = ""
 
 
-@app.post("/knowledge/negative")
+@app.post("/knowledge/negative", dependencies=[Depends(require("knowledge.write"))])
 def knowledge_negative(req: NegativeBody):
     """기각된 가설 기록 — 심층 분석 시 재안 방지에 활용."""
     try:
@@ -1147,7 +1686,7 @@ def knowledge_negative(req: NegativeBody):
         return {"ok": False, "error": str(e)}
 
 
-@app.get("/knowledge/negative")
+@app.get("/knowledge/negative", dependencies=[Depends(require("knowledge.read"))])
 def knowledge_negative_get(key: str):
     """특정 이슈의 기각된 가설 목록."""
     return {"key": key, "rejected": negative_knowledge.get(key), "stats": negative_knowledge.stats()}
@@ -1156,7 +1695,7 @@ def knowledge_negative_get(key: str):
 # ---------------------------------------------------------------------------
 # 지식 공백 관측성 (P3-8)
 # ---------------------------------------------------------------------------
-@app.get("/knowledge/gaps")
+@app.get("/knowledge/gaps", dependencies=[Depends(require("knowledge.read"))])
 def knowledge_gaps_report(top: int = 20):
     """지식 공백 대시보드 — 자주 질의되나 사례 없는(coverage 미통과) 영역 집계."""
     return knowledge_gaps.report(top=top)
@@ -1165,19 +1704,19 @@ def knowledge_gaps_report(top: int = 20):
 # ---------------------------------------------------------------------------
 # 결과·효능 추적 (자기개선 #1)
 # ---------------------------------------------------------------------------
-@app.post("/knowledge/outcomes/refresh")
+@app.post("/knowledge/outcomes/refresh", dependencies=[Depends(require("knowledge.write"))])
 def knowledge_outcomes_refresh():
     """게시된 RCA 대상 이슈의 현재 Jira 상태를 조회해 효능(게시 후 해결 여부) 갱신."""
     import outcome_tracker
     try:
         out = outcome_tracker.refresh()
-        _RECO_STATE.clear()
+        _invalidate_reco()
         return {"ok": True, **out}
     except Exception as e:
         return {"ok": False, "error": str(e)[:200]}
 
 
-@app.get("/knowledge/outcomes")
+@app.get("/knowledge/outcomes", dependencies=[Depends(require("knowledge.read"))])
 def knowledge_outcomes():
     """효능 집계 — resolved_after_rca/pending 비율 + 효능율."""
     import outcome_tracker
@@ -1187,7 +1726,7 @@ def knowledge_outcomes():
 # ---------------------------------------------------------------------------
 # 지식 모순 탐지 (자기개선 #2)
 # ---------------------------------------------------------------------------
-@app.get("/knowledge/contradictions")
+@app.get("/knowledge/contradictions", dependencies=[Depends(require("knowledge.read"))])
 def knowledge_contradictions(sim_hi: float = 0.85, rc_lo: float = 0.60):
     """같은 고장모드(문서 유사↑)인데 근본원인이 엇갈리는(근본원인 유사↓) 쌍 = 모순 후보."""
     import contradictions
@@ -1198,7 +1737,7 @@ def knowledge_contradictions(sim_hi: float = 0.85, rc_lo: float = 0.60):
 # ---------------------------------------------------------------------------
 # 평가셋 빌더 (자기개선 #0 — 평가 기질)
 # ---------------------------------------------------------------------------
-@app.post("/eval/build")
+@app.post("/eval/build", dependencies=[Depends(require("ops.eval"))])
 def eval_build():
     """실신호 평가셋(real: outcome+feedback) + 변별 hard셋(증상만) 재빌드."""
     import eval_builder
@@ -1207,7 +1746,7 @@ def eval_build():
     return {"real": eval_builder.real_pairs(st["by_key"]), "hard": eval_builder.hard_set(base)}
 
 
-@app.post("/eval/paraphrase/generate")
+@app.post("/eval/paraphrase/generate", dependencies=[Depends(require("ops.eval"))])
 def eval_paraphrase_generate(per_template: int = 1, max_templates: int = 10):
     """LLM 재서술로 변별 평가셋 확장(토큰 비용 — max_templates로 제한). 누적 저장."""
     import eval_builder
@@ -1229,7 +1768,7 @@ class OwnerBody(BaseModel):
     role: str = ""
 
 
-@app.post("/knowledge/ownership")
+@app.post("/knowledge/ownership", dependencies=[Depends(require("knowledge.write"))])
 def knowledge_ownership(req: OwnerBody):
     """사례/기사의 저자·검증자·역할 기록(책임성·신뢰가중·전문가 탐색용)."""
     try:
@@ -1240,7 +1779,7 @@ def knowledge_ownership(req: OwnerBody):
         return {"ok": False, "error": str(e)}
 
 
-@app.get("/knowledge/experts")
+@app.get("/knowledge/experts", dependencies=[Depends(require("knowledge.read"))])
 def knowledge_experts(category: str = "", template: str = "", top: int = 5):
     """find-the-expert — 고장 클래스별 기여 빈도순 전문가 후보."""
     return ownership.experts_for(category=category, template=template, top=top)
@@ -1249,7 +1788,7 @@ def knowledge_experts(category: str = "", template: str = "", top: int = 5):
 # ---------------------------------------------------------------------------
 # 지식 export·상호운용 (P3-10)
 # ---------------------------------------------------------------------------
-@app.get("/knowledge/export")
+@app.get("/knowledge/export", dependencies=[Depends(require("knowledge.read"))])
 def knowledge_export_endpoint(format: str = "json"):  # 함수명: 모듈 knowledge_export과 충돌 회피
     """축적 지식 내보내기 — format=json(구조화) | markdown(위키 붙여넣기용)."""
     if format == "markdown":
@@ -1259,7 +1798,7 @@ def knowledge_export_endpoint(format: str = "json"):  # 함수명: 모듈 knowle
     return knowledge_export.bundle()
 
 
-@app.get("/selfcheck")
+@app.get("/selfcheck", dependencies=[Depends(require("ops.eval"))])
 def selfcheck(save: bool = True):
     """자기 개선 점검 — 모든 측정 신호 집계 + 직전 대비 드리프트 + 개선 제안.
 
@@ -1274,7 +1813,7 @@ class ParamEvalBody(BaseModel):
     value: float
 
 
-@app.post("/selfcheck/evaluate-param")
+@app.post("/selfcheck/evaluate-param", dependencies=[Depends(require("ops.eval"))])
 def selfcheck_evaluate_param(req: ParamEvalBody):
     """L2 — 후보 파라미터를 동결 평가셋에 shadow 평가(READ-ONLY, live 불변).
 
@@ -1286,7 +1825,7 @@ def selfcheck_evaluate_param(req: ParamEvalBody):
         return {"error": str(e)}
 
 
-@app.post("/selfcheck/apply-param")
+@app.post("/selfcheck/apply-param", dependencies=[Depends(require("ops.eval"))])
 def selfcheck_apply_param(req: ParamEvalBody):
     """L2 적용 — 무회귀 게이트를 재실행해 통과할 때만 override 영속·반영(되돌림 가능).
 
@@ -1300,26 +1839,26 @@ def selfcheck_apply_param(req: ParamEvalBody):
         return {"ok": False, "applied": False, "verdict": verdict,
                 "error": "무회귀 게이트 미통과 — 적용 거부"}
     app_config.set_env(env_key, str(req.value))
-    _RECO_STATE.clear()  # 검증된 값 반영
+    _invalidate_reco()  # 검증된 값 반영
     return {"ok": True, "applied": True, "param": req.param, "value": req.value,
             "env": env_key, "verdict": verdict}
 
 
-@app.post("/selfcheck/reset-param")
+@app.post("/selfcheck/reset-param", dependencies=[Depends(require("ops.eval"))])
 def selfcheck_reset_param(param: str):
     """L2 되돌리기 — 파라미터 override 제거(클래스 기본값 복귀)."""
     env_key = self_improve.TUNABLE.get(param)
     if not env_key:
         return {"ok": False, "error": f"튜닝 가능 파라미터 아님: {param}"}
     app_config.set_env(env_key, "")
-    _RECO_STATE.clear()
+    _invalidate_reco()
     return {"ok": True, "reset": param, "env": env_key}
 
 
 # ---------------------------------------------------------------------------
 # 자기 개선 loop — L3 지식 변경 제안 큐 (사람 검토 전용, loop는 실행 안 함)
 # ---------------------------------------------------------------------------
-@app.post("/improve/suggest")
+@app.post("/improve/suggest", dependencies=[Depends(require("improve.manage"))])
 def improve_suggest():
     """신호에서 지식 변경 제안을 도출해 큐에 병합(거부/완료 상태 보존). loop는 실행 안 함."""
     st = _reco_state()
@@ -1329,7 +1868,7 @@ def improve_suggest():
     return {"generated": len(generated), **res, "open_items": improve_queue.items("open")}
 
 
-@app.get("/improve/queue")
+@app.get("/improve/queue", dependencies=[Depends(require("knowledge.read"))])
 def improve_queue_list(state: str = "open"):
     """제안 큐 조회(기본 open)."""
     return {"items": improve_queue.items(state), "counts": improve_queue.counts()}
@@ -1340,7 +1879,7 @@ class SuggestStateBody(BaseModel):
     state: str           # open | done | dismissed
 
 
-@app.post("/improve/queue/state")
+@app.post("/improve/queue/state", dependencies=[Depends(require("improve.manage"))])
 def improve_queue_state(req: SuggestStateBody):
     """제안 상태 변경(사람 결정: done 완료 / dismissed 거부)."""
     try:
@@ -1350,15 +1889,15 @@ def improve_queue_state(req: SuggestStateBody):
         return {"ok": False, "error": str(e)}
 
 
-@app.post("/reco/reload")
+@app.post("/reco/reload", dependencies=[Depends(require("ops.sync"))])
 def reco_reload():
     """추천 KB 캐시 무효화 — 새 큐레이션 지식을 서버 재시작 없이 즉시 반영."""
-    _RECO_STATE.clear()
+    _invalidate_reco()
     st = _reco_state()
     return {"ok": True, "kb_size": len(st["resolved"]), "by_key": len(st["by_key"])}
 
 
-@app.post("/knowledge/rebuild-from-jira")
+@app.post("/knowledge/rebuild-from-jira", dependencies=[Depends(require("ops.sync"))])
 def knowledge_rebuild_from_jira():
     """재해 복구/머신 간 동기화 — Jira 봇 댓글(조직 SoT)에서 지식 자산을 재구성한다.
 
@@ -1366,13 +1905,13 @@ def knowledge_rebuild_from_jira():
     """
     try:
         out = knowledge_store.rebuild_from_jira(BOT_MARKER)
-        _RECO_STATE.clear()  # 복원된 지식 즉시 반영
+        _invalidate_reco()  # 복원된 지식 즉시 반영
         return {"ok": True, **out}
     except Exception as e:
         return {"ok": False, "error": str(e)[:200]}
 
 
-@app.post("/rca/reject")
+@app.post("/rca/reject", dependencies=[Depends(require("rca.approve"))])
 def rca_reject(req: KeyBody):
     updated = rca_queue.set_state(req.key, "rejected")
     return {"ok": bool(updated), "item": updated, "counts": rca_queue.counts()}
@@ -1418,7 +1957,7 @@ class ValidateBody(BaseModel):
     body: Optional[str] = None   # 현재(수정된) 본문; 없으면 큐의 원본
 
 
-@app.post("/rca/validate")
+@app.post("/rca/validate", dependencies=[Depends(require("rca.draft"))])
 def rca_validate(req: ValidateBody):
     """수정사항 검증 — (1) 가드레일: 인용 키 ⊆ KB, 한자/CJK, 빈값  (2) Agent-as-Judge:
     근거 충실도·인용 정합·실행가능성 1~10 채점. 승인 전 품질 확인용(차단 아님)."""

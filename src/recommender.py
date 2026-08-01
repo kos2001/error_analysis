@@ -93,6 +93,7 @@ class Recommender:
     gate_cos: float = 0.48               # coverage 게이트: 임베딩 코사인 임계
     # 0.48 근거: paraphrase 정답 중 0.485/0.496이 0.50 직하에서 차단(FN)되는 반면,
     # 무관 질의 분포는 0.474 이하(예외 n06 0.503은 어느 임계든 통과). 측정 2026-06-11.
+    # 임계는 모델별 코사인 분포에 종속 — 미지정 시 _GATE_COS_BY_MODEL 로 보정한다.
     doc_analysis: bool = True            # KB 문서에 분석 단계(디버깅 접근/근본 원인) 포함
     verified_tiebreak: float = 1e-4      # 검증 완료(✅+🙌) 사례 동점 시 우선 노출(M2).
     # 1e-4 근거: 텍스트/메타 신호(RRF≈0.03, boost 0.15)를 절대 덮지 않는 크기 —
@@ -114,7 +115,16 @@ class Recommender:
     _embedder: object = field(default=None, repr=False)
     _kb_emb: object = field(default=None, repr=False)
 
+    # 모델별 embed_cos 게이트 임계 — 코사인 분포가 모델마다 다르므로 임계도 다르다.
+    # bge-m3 0.57 근거(측정 2026-08-01, paraphrase+generated 정답 73 / 무관 40):
+    # 정답 max_cos 최소 0.576, 무관 max_cos 최대 0.563 → 그 사이. 마진이 ±0.007로
+    # 좁으니 모델·KB 변경 시 scripts 재보정 필요(MiniLM 0.48은 여유 마진이 컸음).
+    _GATE_COS_BY_MODEL = {"baai/bge-m3": 0.57}
+
     def __post_init__(self):
+        if self.gate_cos == type(self).gate_cos:  # 사용자가 명시하지 않았을 때만 보정
+            self.gate_cos = self._GATE_COS_BY_MODEL.get(
+                self._model_name().lower(), self.gate_cos)
         self._docs = [_doc_text(r, analysis=self.doc_analysis) for r in self.kb]
         self._bm25 = BM25Okapi([tokenize(d) for d in self._docs])
         self._kb_ents = [query_entities(r) for r in self.kb]
@@ -171,12 +181,28 @@ class Recommender:
         out: list[list[float]] = []
         for i in range(0, len(texts), 64):  # rate/payload 여유 배치
             chunk = texts[i:i + 64]
-            r = requests.post(f"{base}/embeddings", headers=hdrs,
-                              json={"model": self._model_name(), "input": chunk}, timeout=120)
-            r.raise_for_status()
-            data = sorted(r.json()["data"], key=lambda x: x["index"])
+            data = self._embed_post(base, hdrs, chunk)
             out.extend(d["embedding"] for d in data)
         return out
+
+    # 429/5xx 지수 백오프 재시도. 질의 경로(_cos_all)는 요청당 API 1회를 쓰므로
+    # 레이트 리밋이 그대로 500으로 새어 나갔다(평가 배치에서 실측 2026-08-01).
+    _RETRY_STATUS = (429, 500, 502, 503, 504)
+
+    def _embed_post(self, base: str, hdrs: dict, chunk: list[str], tries: int = 4):
+        import time
+        import requests
+        for attempt in range(tries):
+            r = requests.post(f"{base}/embeddings", headers=hdrs,
+                              json={"model": self._model_name(), "input": chunk}, timeout=120)
+            if r.status_code in self._RETRY_STATUS and attempt < tries - 1:
+                # Retry-After 우선, 없으면 0.5·2^n (최대 8s)
+                wait = float(r.headers.get("Retry-After") or min(0.5 * 2 ** attempt, 8.0))
+                time.sleep(wait)
+                continue
+            r.raise_for_status()
+            return sorted(r.json()["data"], key=lambda x: x["index"])
+        raise RuntimeError("unreachable")
 
     def _init_embed(self):
         import hashlib
@@ -317,7 +343,10 @@ class Recommender:
         q_ents = query_entities(query_rec)
         # 강도 신호 — RRF(순위 기반) 점수와 별개. 게이트/신뢰도 표시는 이것만 사용한다.
         cos = bm25_raw = None
-        if self.signals and self._embedder is not None:
+        # 조건은 _kb_emb(임베딩 보유 여부) — _embedder는 fastembed 전용 객체라
+        # openrouter 백엔드에서 항상 None이었고, 그 탓에 신호·embed_cos 게이트가
+        # 통째로 생략돼 coverage가 무조건 True였다(무관 차단율 0.0, 2026-08-01 실측).
+        if self.signals and self._kb_emb is not None:
             cos = self._cos_all(qtext)
             bm25_raw = self._bm25.get_scores(tokenize(qtext))
         matches = []

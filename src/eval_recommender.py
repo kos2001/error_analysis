@@ -22,6 +22,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 from pathlib import Path
 
 import sys as _sys
@@ -160,7 +161,16 @@ def main() -> int:
                 kw["boost"] = args.boost
             if args.rerank:
                 kw["rerank"] = True
-            rec = Recommender(resolved, method=m, **kw)
+            # 임베딩 백엔드/모델은 서버(backend/server.py)와 같은 환경변수를 따른다 —
+            # 하네스가 클래스 기본값(로컬 fastembed)만 평가하면 운영 설정(openrouter)의
+            # 회귀를 놓친다(2026-08-01 embed_cos 게이트 무동작 사례).
+            rec = Recommender(resolved, method=m,
+                              embed_backend=os.getenv("RVP_EMBED_BACKEND", "fastembed"),
+                              embed_model=(os.getenv("RVP_EMBED_MODEL", "")
+                                           or ("baai/bge-m3"
+                                               if os.getenv("RVP_EMBED_BACKEND", "") == "openrouter"
+                                               else "")),
+                              **kw)
             tag = f"{m}|{st}" + (f"|b{args.boost}" if args.boost is not None else "")
             loo_r = evaluate(rec, resolved, kb_keys, loo=True)
             unr_r = evaluate(rec, unresolved, kb_keys, loo=False)
