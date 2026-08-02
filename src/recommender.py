@@ -111,7 +111,15 @@ class Recommender:
     kb: list[dict]                       # 해결(Resolved) 이슈 레코드
     method: str = "hybrid"
     rrf_k: int = 60
-    boost: float = 0.15                  # 동일 칩/분류 가산
+    boost: float = 0.15                  # 동일 칩/분류 가산 — **현 KB 에서는 효과 없음**.
+    # 측정(2026-08-02, confusable+paraphrase): 0.30 / 0.15 / 0.00 이 rerank ON·OFF
+    # 양쪽에서 **완전히 동일한 지표**를 냈다. RRF 융합 점수(≈0.03 단위)에 0.15 를
+    # 더하면 순위가 크게 흔들릴 것 같지만, 실제로는 동일 칩·분류 사례가 이미 상위에
+    # 몰려 있어 상대 순서가 바뀌지 않는다. rerank 가 켜지면 재채점이 1차 순위를
+    # 덮으므로 더더욱 무효다.
+    # → 튜닝해도 소용없다(RVP_BOOST 포함). KB 구성이 크게 달라지면 다시 재라.
+    #   지금 지우지 않는 이유: 칩·분류가 흩어진 KB 에서는 의미가 생길 수 있고,
+    #   제거는 되돌리기보다 비싸다.
     signals: bool = True                 # 강도 신호(embed_cos 등) 산출 — 게이트/표시용
     gate_cos: float = 0.48               # coverage 게이트: 임베딩 코사인 임계
     # 0.48 근거: paraphrase 정답 중 0.485/0.496이 0.50 직하에서 차단(FN)되는 반면,

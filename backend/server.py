@@ -197,7 +197,9 @@ def _build_reco_state() -> dict:
             embed_model=(os.getenv("RVP_EMBED_MODEL", "")
                          or ("baai/bge-m3" if os.getenv("RVP_EMBED_BACKEND", "") == "openrouter"
                              else "")),
-            # L2 검증된 파라미터 override(미설정 시 클래스 기본값 — 현행과 동일).
+            # 파라미터 override(미설정 시 클래스 기본값 — 현행과 동일).
+            # 주의: RVP_BOOST 는 현 KB 에서 **효과가 없다**(0.30~0.00 동일, 2026-08-02
+            # 실측). 튜닝 대상으로 삼지 말 것 — 근거는 recommender.boost 주석 참조.
             **{kw: float(os.environ[env]) for kw, env in
                (("gate_cos", "RVP_GATE_COS"), ("boost", "RVP_BOOST")) if os.getenv(env)},
         ),
@@ -1187,12 +1189,17 @@ def _explain_job(query_rec: dict, match_recs: list[dict], ckey: str) -> _Explain
         _EXPLAIN_JOBS[ckey] = job
 
     def work() -> None:
+        t0 = time.perf_counter()
         try:
             for delta in _generate_explain_md(query_rec, match_recs):
                 job.add(delta)
             job.finish()
+            _record_metric("explain", {"total_ms": round((time.perf_counter() - t0) * 1000, 1),
+                                       "chars": sum(len(c) for c in job.chunks), "cached": False})
         except Exception as e:
             job.finish(str(e)[:200])
+            _record_metric("explain", {"total_ms": round((time.perf_counter() - t0) * 1000, 1),
+                                       "failed": 1, "cached": False})
         finally:
             # 완료본은 캐시에 있으므로 작업 기록은 오래 들고 있을 이유가 없다.
             threading.Timer(60.0, lambda: _EXPLAIN_JOBS.pop(ckey, None)).start()
@@ -1262,6 +1269,8 @@ def explain_stream(key: Optional[str] = None, summary: str = "", symptom: str = 
         try:
             hit = None if refresh else _explain_md_cached(query_rec, match_recs)
             if hit:
+                _record_metric("explain", {"total_ms": 0.0, "cached": True,
+                                           "chars": len(hit.get("markdown", ""))})
                 # 캐시본도 델타로 흘려보낸다 — 프론트의 SSE 처리 경로를 하나로 유지.
                 md = hit.get("markdown", "")
                 for i in range(0, len(md), 400):
