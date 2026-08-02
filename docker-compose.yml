@@ -12,6 +12,15 @@ services:
     environment:
       RVP_HOST: "0.0.0.0"
       RVP_PORT: "8001"
+      # 세션·토큰 서명 키. **반드시 고정**한다 — 없으면 프로세스마다 새로 만들어
+      # 재기동 시 웹 세션과 MCP 토큰이 전부 무효가 된다.
+      RVP_SESSION_SECRET: "${RVP_SESSION_SECRET:?docker compose 실행 전에 설정하세요}"
+      # MCP(/mcp)는 기본 활성. 원격 배포 시 DNS 리바인딩 보호용 허용 Host 를 지정한다
+      # (미지정이면 로컬만 허용되어 원격 클라이언트가 421 로 거부된다).
+      RVP_MCP: "1"
+      LSI_MCP_ALLOWED_HOSTS: "${LSI_MCP_ALLOWED_HOSTS:-127.0.0.1:*,localhost:*}"
+      # https 뒤에 두면 쿠키에 Secure 를 켠다.
+      RVP_COOKIE_SECURE: "${RVP_COOKIE_SECURE:-0}"
     volumes:
       - ./data:/app/data        # 큐레이션 지식·KB 영속(런타임 쓰기 보존)
       - ./tmp_db:/app/tmp_db     # 임베딩 캐시·승인 큐·그래프 영속

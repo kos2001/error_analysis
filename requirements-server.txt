@@ -12,3 +12,5 @@ requests
 python-dotenv
 PyYAML          # 사용자·역할 정의(users.yaml)
 PyJWT[crypto]   # OIDC id_token 검증(SSO)
+mcp>=2.0        # MCP 서버(/mcp streamable-HTTP + stdio)
+httpx           # MCP 도구의 백엔드 호출(인프로세스 ASGI 포함)

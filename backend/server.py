@@ -28,6 +28,7 @@ from lang_validator import validate_and_fix  # noqa: E402
 from preprocess import parse_issue  # noqa: E402
 from recommender import Recommender, template_key  # noqa: E402
 import app_config  # noqa: E402
+import mcp_server  # noqa: E402
 import auth  # noqa: E402
 import oidc_sso  # noqa: E402
 import session  # noqa: E402
@@ -62,6 +63,11 @@ app_config.load_into_env()
 
 # LLM 설명 생성 엔진: agno(OpenRouter HTTP) 단일.
 
+# MCP 엔드포인트는 FastAPI 생성 **전에** 만들어야 한다(lifespan 에 넘겨야 하므로).
+# RVP_MCP=0 이면 마운트하지 않는다.
+_MCP = mcp_server.build_http_app() if os.getenv("RVP_MCP", "1") == "1" else None
+
+
 @asynccontextmanager
 def _warm_kb() -> None:
     """KB 상태(파싱·BM25·임베딩)를 미리 만든다.
@@ -84,7 +90,11 @@ async def _lifespan(_app: FastAPI):
     # 스레드가 그 48초를 대신 물고, 그 사이 들어온 요청도 같이 기다린다.
     threading.Thread(target=_warm_kb, name="kb-warmup", daemon=True).start()
     threading.Timer(8.0, _start_prewarm).start()
-    yield
+    if _MCP is None:
+        yield
+    else:
+        async with _MCP.lifespan():
+            yield
     _stop_jira_poller()
 
 
@@ -247,12 +257,24 @@ def _proxy_email(request: Request) -> str:
     return request.headers.get(name, "") if name else ""
 
 
+def _bearer_token(request: Request) -> str:
+    """헤더로 온 토큰 — MCP·CLI 처럼 쿠키를 쓸 수 없는 클라이언트용.
+
+    쿠키와 **같은 서명 토큰**이다. 별도 자격증명 체계를 만들지 않는 편이
+    검증 경로가 하나로 유지되고, 만료·폐기 규칙도 갈라지지 않는다.
+    """
+    h = request.headers.get("authorization", "").strip()
+    if h.lower().startswith("bearer "):
+        return h[7:].strip()
+    return request.headers.get("x-rvp-token", "").strip()
+
+
 def current_user(request: Request) -> auth.User | None:
     """요청의 신원. 인증 비활성이면 ALL_ACCESS, 미인증이면 None."""
     users = _users()
     if users is None:
         return auth.ALL_ACCESS
-    tok = request.cookies.get(session.COOKIE_NAME, "")
+    tok = request.cookies.get(session.COOKIE_NAME, "") or _bearer_token(request)
     body = session.verify(tok) if tok else None
     if body:
         # sub 가 정식 키. email 은 이전 형식(아이디 계정은 email 이 비어 있어 쓸 수 없다).
@@ -390,6 +412,36 @@ def auth_reload(_u: auth.User = Depends(require("config.write"))):
     """users.yaml 을 다시 읽는다 — 사용자 추가 후 재기동하지 않기 위함."""
     _reload_users()
     return {"ok": True, **auth.auth_status(_users())}
+
+
+class TokenBody(BaseModel):
+    days: int = 30
+    label: str = ""
+
+
+@app.post("/auth/token")
+def auth_issue_token(body: TokenBody, request: Request):
+    """MCP·CLI 용 액세스 토큰 발급 — 로그인한 본인 신원으로만 발급된다.
+
+    쿠키와 같은 서명 토큰이라 검증 경로가 하나다. 서버에 저장하지 않으므로
+    개별 폐기는 불가능하고, 폐기 수단은 두 가지다:
+      · 사용자 회수(users.yaml revoked) — 그 신원의 모든 토큰이 즉시 무효가 된다
+        (토큰은 신원만 담고, 권한은 매 요청 인가 목록에서 다시 읽기 때문).
+      · RVP_SESSION_SECRET 교체 — 전체 무효화.
+    """
+    u = current_user(request)
+    if u is None:
+        raise HTTPException(status_code=401, detail="로그인이 필요합니다")
+    if u.via == "disabled":
+        raise HTTPException(status_code=400,
+                            detail="인증이 비활성 상태입니다 — 토큰이 필요 없습니다(전체 권한)")
+    days = max(1, min(int(body.days or 30), 365))
+    token = session.issue({"sub": u.subject, "via": "token"}, ttl=days * 86400)
+    print(f"[auth] 토큰 발급 {u.subject} · {days}일 · label={body.label or '-'}")
+    return {"token": token, "subject": u.subject, "role": u.role,
+            "expires_in_days": days,
+            "usage": "Authorization: Bearer <token> 또는 X-RVP-Token 헤더",
+            "note": "이 값은 다시 보여주지 않습니다. 안전한 곳에 보관하세요."}
 
 
 # ---------------------------------------------------------------------------
@@ -1227,6 +1279,30 @@ def explain_cache_clear():
     return {"ok": True, "removed": llm_cache.clear()}
 
 
+@app.get("/recommend/explain/cached", dependencies=[Depends(require("reco.read"))])
+def explain_cached(key: str, k: int = 4):
+    """이미 만들어 둔 심층 분석만 돌려준다 — **생성하지 않는다**.
+
+    MCP 처럼 스스로 추론하는 클라이언트를 위한 것이다. 없으면 없다고 알린다.
+    """
+    st = _reco_state()
+    query_rec = st["by_key"].get(key)
+    if not query_rec:
+        raise HTTPException(status_code=404, detail=f"이슈 {key} 없음")
+    result = _recommend_cached(query_rec, k=k, exclude_key=key)
+    if not result["matches"] or not result.get("coverage", True):
+        return {"cached": False, "coverage": False, "gate": result.get("gate"),
+                "reason": "게이트 미통과 — 근거가 부족해 분석을 생성하지 않습니다"}
+    match_recs = [st["by_key"].get(m["key"], m) for m in result["matches"]]
+    hit = _explain_md_cached(query_rec, match_recs)
+    if hit is None:
+        return {"cached": False, "coverage": True,
+                "evidence_keys": [m["key"] for m in result["matches"]],
+                "reason": "저장된 분석이 없습니다 — analyze_issue 의 근거로 직접 분석하세요"}
+    return {"cached": True, "coverage": True, "markdown": hit.get("markdown", ""),
+            "citations": hit.get("citations", [])}
+
+
 @app.post("/recommend", dependencies=[Depends(require("reco.read"))])
 def recommend(req: RecommendRequest):
     st = _reco_state()
@@ -2008,6 +2084,15 @@ def rca_validate(req: ValidateBody):
         out["judge_passed"] = jr.passed
         out["judge_reasoning"] = jr.reasoning[:400]
     return out
+
+
+# MCP 엔드포인트 마운트 — 정적 프론트("/")보다 **먼저** 붙인다. 순서가 뒤바뀌면
+# SPA 폴백이 /mcp 를 삼킨다. 백엔드 호출은 인프로세스(ASGITransport)로 돌려
+# 자기 자신에게 소켓을 다시 열지 않으면서 인증 의존성을 그대로 통과시킨다.
+if _MCP is not None:
+    app.mount("/mcp", _MCP.app, name="mcp")
+    _MCP.bind(app)
+    print("[mcp] /mcp 마운트됨 (streamable-HTTP) — RVP_MCP=0 으로 끕니다")
 
 
 # 프로덕션(Docker 등): 빌드된 프론트(web/dist)를 같은 오리진에서 정적 서빙.
