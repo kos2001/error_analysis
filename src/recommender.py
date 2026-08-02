@@ -254,19 +254,62 @@ class Recommender:
             self._embedder = TextEmbedding(model_name=self._model_name())
         else:
             self._embedder = None  # API 백엔드는 객체 불필요(_openrouter_embed 사용)
-        # KB 임베딩 디스크 캐시 — 문서+모델(+비기본 백엔드)이 같으면 재계산 생략
-        sig = self._model_name() + ("" if self.embed_backend == "fastembed" else f"@{self.embed_backend}")
-        digest = hashlib.md5(("\n".join(self._docs) + sig).encode()).hexdigest()[:12]
-        cache = Path(__file__).resolve().parent.parent / "tmp_db" / f"kb_emb_{digest}.npz"
-        if cache.exists():
-            self._kb_emb = np.load(cache)["emb"]
-            return
-        self._kb_emb = self._embed_texts(self._docs, is_query=False)
-        try:
-            cache.parent.mkdir(exist_ok=True)
-            np.savez_compressed(cache, emb=self._kb_emb)
-        except OSError:
-            pass  # 캐시 실패는 치명적이지 않음
+        self._kb_emb = self._embed_docs_incremental(self._docs)
+
+    def _embed_docs_incremental(self, docs: list[str]):
+        """문서 **단위** 캐시 — 바뀐 문서만 다시 임베딩한다.
+
+        예전에는 문서 집합 전체를 하나의 해시로 잡아, 이슈 1건만 바뀌어도 캐시가
+        미스가 되고 KB 전량을 다시 임베딩했다(실측 4.8초). Jira 폴러가 5초 주기로
+        도는 지금은 누군가 이슈를 하나 고치면 그 비용을 다음 사용자가 문다 —
+        그것도 빌드 락을 쥔 요청 스레드에서라 그동안 들어온 요청이 함께 대기한다.
+
+        저장 형태: 모델마다 파일 하나(hashes + emb 행렬). 문서 수만큼 파일을 만들면
+        수천 건에서 파일시스템이 병목이 되고, 한 파일이면 로드가 한 번이다.
+        """
+        import hashlib
+        from pathlib import Path
+        np = self._np
+        sig = self._model_name() + ("" if self.embed_backend == "fastembed"
+                                    else f"@{self.embed_backend}")
+        slug = hashlib.md5(sig.encode()).hexdigest()[:10]
+        store = Path(__file__).resolve().parent.parent / "tmp_db" / f"docvec_{slug}.npz"
+
+        want = [hashlib.sha1(d.encode("utf-8")).hexdigest() for d in docs]
+        known: dict[str, int] = {}
+        mat = None
+        if store.exists():
+            try:
+                z = np.load(store, allow_pickle=False)
+                mat = z["emb"]
+                known = {h: i for i, h in enumerate(z["hashes"].tolist())}
+            except Exception:
+                mat, known = None, {}          # 손상된 저장소는 버리고 새로 만든다
+
+        missing = [i for i, h in enumerate(want) if h not in known]
+        if missing:
+            new_emb = self._embed_texts([docs[i] for i in missing], is_query=False)
+            new_emb = np.asarray(new_emb, dtype=np.float32)
+            if mat is None or mat.size == 0:
+                mat = new_emb
+                known = {want[i]: k for k, i in enumerate(missing)}
+            else:
+                base = len(mat)
+                mat = np.vstack([mat.astype(np.float32), new_emb])
+                for k, i in enumerate(missing):
+                    known[want[i]] = base + k
+            try:
+                store.parent.mkdir(exist_ok=True)
+                # 현재 KB 에 없는 옛 벡터는 버린다 — 무한히 자라지 않게.
+                keep = {h: known[h] for h in want if h in known}
+                order = list(keep)
+                np.savez_compressed(store, hashes=np.array(order),
+                                    emb=mat[[keep[h] for h in order]])
+            except OSError:
+                pass                            # 캐시 쓰기 실패는 치명적이지 않다
+        if missing:
+            print(f"[embed] 문서 {len(docs)}건 중 {len(missing)}건만 신규 임베딩")
+        return np.asarray([mat[known[h]] for h in want], dtype=np.float32)
 
     def embed_cached(self, texts: list[str], tag: str):
         """텍스트 묶음을 임베딩하되 **디스크에 캐시**한다(내용+모델 주소).
