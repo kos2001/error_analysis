@@ -132,6 +132,27 @@ def _slim_match(m: dict) -> dict:
     return out
 
 
+def _guidance(gate: dict) -> str:
+    """점수를 어떻게 읽어야 하는지까지 알려 준다.
+
+    rerank_score·embed_cos 는 **모델 원점수**다. 백분율처럼 읽으면 안 된다 — 실측에서
+    정답 rerank 최소가 0.384, 통과 임계는 0.17 이다. "38% 니까 관련 없다" 는 판단은
+    틀린다. 판정 기준은 gate 안의 임계값이고, 그걸 같이 실어 보낸다.
+    """
+    if gate.get("signal") == "none":
+        return ("판정 불가: 재순위·임베딩 서비스를 쓸 수 없어 관련도를 검증하지 "
+                "못했습니다. **사례가 없다는 뜻이 아닙니다** — 후보는 있지만 검증되지 "
+                "않았으니 근거로 삼지 말고, 일시 장애임을 알리고 재시도를 권하세요.")
+    base = ("coverage=false 면 근거가 부족합니다 — 매치를 근거로 결론을 내지 말고 "
+            "시니어 검토가 필요하다고 답하세요.")
+    thr = gate.get("threshold") if gate.get("signal") == "rerank" else gate.get("cos_threshold")
+    if thr is not None:
+        base += (f" 점수(rerank_score·embed_cos)는 모델 원점수이니 백분율로 읽지 말고 "
+                 f"이 질의의 통과 임계 {thr} 와 비교하세요. 판정은 이미 coverage 에 "
+                 f"반영돼 있습니다.")
+    return base
+
+
 def _slim_reco(d: dict) -> dict:
     if "error" in d:
         return d
@@ -141,8 +162,7 @@ def _slim_reco(d: dict) -> dict:
         "gate": d.get("gate"),
         "proposal": d.get("proposal"),
         "matches": [_slim_match(m) for m in d.get("matches", [])],
-        "_guidance": ("coverage=false 면 근거가 부족합니다 — 매치를 근거로 결론을 "
-                      "내지 말고 시니어 검토가 필요하다고 답하세요."),
+        "_guidance": _guidance(d.get("gate") or {}),
     }
 
 
