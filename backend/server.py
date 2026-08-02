@@ -2356,6 +2356,16 @@ def rca_validate(req: ValidateBody):
 # SPA 폴백이 /mcp 를 삼킨다. 백엔드 호출은 인프로세스(ASGITransport)로 돌려
 # 자기 자신에게 소켓을 다시 열지 않으면서 인증 의존성을 그대로 통과시킨다.
 if _MCP is not None:
+    # 슬래시 없는 /mcp 도 받는다. Mount 는 POST 를 자동 리다이렉트하지 않아서, 문서대로
+    # "https://<서버>/mcp" 를 넣은 클라이언트가 405 만 보고 이유를 알 수 없었다.
+    # 307 이어야 메서드와 본문이 보존된다(301/302 는 POST 를 GET 으로 바꾼다).
+    from fastapi.responses import RedirectResponse as _Redirect
+
+    @app.api_route("/mcp", methods=["GET", "POST", "DELETE"], include_in_schema=False)
+    async def _mcp_slash(request: Request):
+        q = f"?{request.url.query}" if request.url.query else ""
+        return _Redirect(f"/mcp/{q}", status_code=307)
+
     app.mount("/mcp", _MCP.app, name="mcp")
     _MCP.bind(app)
     print("[mcp] /mcp 마운트됨 (streamable-HTTP) — RVP_MCP=0 으로 끕니다")
@@ -2374,5 +2384,12 @@ if __name__ == "__main__":
     import uvicorn
     import os as _os
     # 컨테이너에서는 0.0.0.0 바인드 필요 → RVP_HOST로 조정(기본 127.0.0.1 로컬 안전).
-    uvicorn.run("server:app", host=_os.getenv("RVP_HOST", "127.0.0.1"),
+    #
+    # 앱을 **객체로** 넘긴다. "server:app" 문자열이면 uvicorn 이 이 파일을 모듈로 다시
+    # import 해서 모듈 본문이 두 번 돈다 — 이 파일은 __main__ 으로 이미 한 번 실행된
+    # 뒤다. 실제로 MCP 앱과 FastAPI 앱이 두 벌씩 만들어지고 있었다(로그의 "[mcp]
+    # 마운트됨" 이 두 번 찍혀 드러났다). 트래픽은 한쪽만 받으니 나머지는 통째로 사장된다.
+    # 지금은 메모리 낭비 정도지만, 모듈 수준에 부작용(파일 쓰기·스레드·외부 등록)이
+    # 하나라도 생기면 조용히 두 번 실행된다. reload 를 쓰지 않으므로 객체 전달이 맞다.
+    uvicorn.run(app, host=_os.getenv("RVP_HOST", "127.0.0.1"),
                 port=int(_os.getenv("RVP_PORT", "8001")), reload=False)
