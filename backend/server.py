@@ -63,11 +63,27 @@ app_config.load_into_env()
 # LLM 설명 생성 엔진: agno(OpenRouter HTTP) 단일.
 
 @asynccontextmanager
+def _warm_kb() -> None:
+    """KB 상태(파싱·BM25·임베딩)를 미리 만든다.
+
+    로컬 임베딩 모델은 첫 사용 때 모델 로드 + KB 전량 임베딩을 한다 — 실측으로
+    **첫 요청이 48.8초** 걸렸다(e5-large, 문서 137건, CPU). 사용자가 그 값을
+    치르지 않도록 기동 직후 백그라운드에서 끝내 둔다. 캐시가 있으면 수십 ms 다.
+    """
+    t = time.perf_counter()
+    try:
+        _reco_state()
+        print(f"[warmup] KB 준비 완료 {(time.perf_counter() - t) * 1000:.0f}ms")
+    except Exception as e:
+        print(f"[warmup] 실패(첫 요청에서 다시 시도): {str(e)[:160]}")
+
+
 async def _lifespan(_app: FastAPI):
     _start_jira_poller()          # 정의는 아래 Jira 동기화 절 — 호출 시점에 해석된다
-    # 심층 분석 예열을 기동 직후 백그라운드로 — 첫 사용자가 기다리지 않게 한다.
-    # 이미 캐시에 있는 건 건너뛰므로 재기동 비용은 거의 없다.
-    threading.Timer(3.0, _start_prewarm).start()
+    # 워밍업이 먼저다 — 예열(prewarm)은 KB 상태를 쓰므로 순서가 뒤바뀌면 예열
+    # 스레드가 그 48초를 대신 물고, 그 사이 들어온 요청도 같이 기다린다.
+    threading.Thread(target=_warm_kb, name="kb-warmup", daemon=True).start()
+    threading.Timer(8.0, _start_prewarm).start()
     yield
     _stop_jira_poller()
 
@@ -156,10 +172,17 @@ def _build_reco_state() -> dict:
             method=os.getenv("RVP_RECO_METHOD", "hybrid_embed"),
             rerank=os.getenv("RVP_RERANK", "1") == "1",
             rerank_model=os.getenv("RVP_RERANK_MODEL", "cohere/rerank-v3.5"),
-            # 임베딩 백엔드/모델(사내 게이트웨이 시 openrouter+bge-m3). 미설정 시 로컬 MiniLM.
+            # 임베딩 백엔드/모델. 사내 게이트웨이 시 openrouter+bge-m3.
+            #
+            # 로컬 임베딩(e5-large)을 시도했다가 되돌렸다 — 격리 벤치에서는 질의
+            # 임베딩이 485ms→64~348ms 로 빨라 보였지만, **실서버에서는 더 느렸다**:
+            # 동일 조건 16건 중앙 bge-m3@API 646ms vs e5@local 1138ms (p90 1036 vs 1793).
+            # ONNX CPU 추론이 요청 스레드풀과 경쟁해 네트워크 왕복보다 비싸진다.
+            # 격리 벤치로 서버 지연을 예측하지 말 것(claudedocs/performance_backlog.md E-0).
             embed_backend=os.getenv("RVP_EMBED_BACKEND", "fastembed"),
             embed_model=(os.getenv("RVP_EMBED_MODEL", "")
-                         or ("baai/bge-m3" if os.getenv("RVP_EMBED_BACKEND", "") == "openrouter" else "")),
+                         or ("baai/bge-m3" if os.getenv("RVP_EMBED_BACKEND", "") == "openrouter"
+                             else "")),
             # L2 검증된 파라미터 override(미설정 시 클래스 기본값 — 현행과 동일).
             **{kw: float(os.environ[env]) for kw, env in
                (("gate_cos", "RVP_GATE_COS"), ("boost", "RVP_BOOST")) if os.getenv(env)},

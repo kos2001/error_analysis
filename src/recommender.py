@@ -19,7 +19,24 @@ from __future__ import annotations
 import re
 from dataclasses import dataclass, field
 
+import threading
+
 from rank_bm25 import BM25Okapi
+
+# HTTP 연결 재사용 — 매 호출 새 연결이면 TLS 핸드셰이크를 다시 한다
+# (실측 2026-08-02: 378ms → 311ms, -68ms/호출).
+_HTTP = None
+_HTTP_LOCK = threading.Lock()
+
+
+def _http():
+    global _HTTP
+    if _HTTP is None:
+        import requests
+        with _HTTP_LOCK:
+            if _HTTP is None:
+                _HTTP = requests.Session()
+    return _HTTP
 
 import sys as _sys
 from pathlib import Path
@@ -116,10 +133,22 @@ class Recommender:
     _kb_emb: object = field(default=None, repr=False)
 
     # 모델별 embed_cos 게이트 임계 — 코사인 분포가 모델마다 다르므로 임계도 다르다.
-    # bge-m3 0.57 근거(측정 2026-08-01, paraphrase+generated 정답 73 / 무관 40):
-    # 정답 max_cos 최소 0.576, 무관 max_cos 최대 0.563 → 그 사이. 마진이 ±0.007로
-    # 좁으니 모델·KB 변경 시 scripts 재보정 필요(MiniLM 0.48은 여유 마진이 컸음).
-    _GATE_COS_BY_MODEL = {"baai/bge-m3": 0.57}
+    # 같은 평가셋(paraphrase+generated 정답 73 / 무관 40)에서 잰 분리 지점이다.
+    #
+    #   bge-m3      0.57  : 정답 최소 0.576 / 무관 최대 0.563 (마진 +0.013, 2026-08-01)
+    #   e5-large    0.853 : 정답 최소 0.862 / 무관 최대 0.844 (마진 +0.018, 2026-08-02)
+    #   MiniLM      0.48  : 여유 마진이 컸음(초기 측정)
+    #
+    # 여기 없는 모델은 클래스 기본값 0.48 로 떨어지는데, 그 값이 그 모델에서 맞는다는
+    # 보장이 없다. **새 임베딩 모델을 쓰기 전에 반드시 분리 지점을 재고 이 표에 넣는다.**
+    # 재지 않으면 게이트가 조용히 무력해진다 — mpnet-base 는 정답 최소 0.396 /
+    # 무관 최대 0.500 으로 애초에 **겹쳐서**(분리 불가) 어떤 임계로도 못 쓴다.
+    # rerank 를 켜고 평가하면 rerank 게이트가 판정을 대신해 이 결함이 가려지므로,
+    # 모델 교체 시에는 반드시 rerank OFF 경로로도 평가한다.
+    _GATE_COS_BY_MODEL = {
+        "baai/bge-m3": 0.57,
+        "intfloat/multilingual-e5-large": 0.853,
+    }
 
     def __post_init__(self):
         if self.gate_cos == type(self).gate_cos:  # 사용자가 명시하지 않았을 때만 보정
@@ -173,7 +202,6 @@ class Recommender:
     def _openrouter_embed(self, texts: list[str]) -> list[list[float]]:
         """OpenRouter /embeddings 호출(배치). OPENROUTER_API_KEY 필요."""
         import os
-        import requests
         from llm_headers import custom_headers
         key = os.environ["OPENROUTER_API_KEY"]
         base = os.getenv("OPENROUTER_BASE_URL", "https://openrouter.ai/api/v1")
@@ -191,10 +219,9 @@ class Recommender:
 
     def _embed_post(self, base: str, hdrs: dict, chunk: list[str], tries: int = 4):
         import time
-        import requests
         for attempt in range(tries):
-            r = requests.post(f"{base}/embeddings", headers=hdrs,
-                              json={"model": self._model_name(), "input": chunk}, timeout=120)
+            r = _http().post(f"{base}/embeddings", headers=hdrs,
+                             json={"model": self._model_name(), "input": chunk}, timeout=120)
             if r.status_code in self._RETRY_STATUS and attempt < tries - 1:
                 # Retry-After 우선, 없으면 0.5·2^n (최대 8s)
                 wait = float(r.headers.get("Retry-After") or min(0.5 * 2 ** attempt, 8.0))

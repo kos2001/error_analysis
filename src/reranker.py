@@ -11,10 +11,27 @@ relevance_score 는 RRF(순위 기반)와 달리 강도가 있는 0~1 점수라,
 from __future__ import annotations
 
 import os
+import threading
 
 import requests
 
 DEFAULT_MODEL = "cohere/rerank-v3.5"
+
+# 연결 재사용 — requests.post 를 매번 부르면 호출마다 TLS 핸드셰이크를 다시 한다
+# (실측 2026-08-02: 새 연결 378ms vs Session 재사용 311ms, 중앙값 기준 -68ms).
+# 서버는 스레드풀에서 동시에 들어오므로 Session 생성만 락으로 감싼다
+# (urllib3 커넥션 풀 자체는 스레드 안전하다).
+_SESSION: requests.Session | None = None
+_LOCK = threading.Lock()
+
+
+def _session() -> requests.Session:
+    global _SESSION
+    if _SESSION is None:
+        with _LOCK:
+            if _SESSION is None:
+                _SESSION = requests.Session()
+    return _SESSION
 
 
 def rerank(query: str, documents: list[str], model: str = DEFAULT_MODEL,
@@ -31,9 +48,9 @@ def rerank(query: str, documents: list[str], model: str = DEFAULT_MODEL,
     payload: dict = {"model": model, "query": query, "documents": documents}
     if top_n is not None:
         payload["top_n"] = top_n
-    r = requests.post(f"{base}/rerank",
-                      headers={"Authorization": f"Bearer {key}", **custom_headers()},
-                      json=payload, timeout=timeout)
+    r = _session().post(f"{base}/rerank",
+                        headers={"Authorization": f"Bearer {key}", **custom_headers()},
+                        json=payload, timeout=timeout)
     r.raise_for_status()
     results = r.json().get("results", [])
     return [(int(x["index"]), float(x["relevance_score"])) for x in results]
