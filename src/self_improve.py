@@ -196,12 +196,8 @@ def embed_kwargs() -> dict:
     있는 문제를 놓친다** — 실제로 대시보드가 "모순 없음", 개선 큐가 "모순 1건" 을
     동시에 보여줬다. 서버 쪽 로직을 바꾸면 여기도 같이 바꿔야 한다.
     """
-    import os as _os
-    return {"embed_backend": _os.getenv("RVP_EMBED_BACKEND", "fastembed"),
-            "embed_model": (_os.getenv("RVP_EMBED_MODEL", "")
-                            or ("baai/bge-m3"
-                                if _os.getenv("RVP_EMBED_BACKEND", "") == "openrouter"
-                                else ""))}
+    from recommender import env_embed_kwargs
+    return env_embed_kwargs()
 
 
 def _resolved_kb():

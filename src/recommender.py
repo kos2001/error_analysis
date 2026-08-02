@@ -51,6 +51,25 @@ _PREFIX = re.compile(r"^\s*\[[^\]]*\]\s*")
 _SUFFIX = re.compile(r"\s*\((?:[^()]|\([^()]*\))*\s/\s(?:[^()]|\([^()]*\))*\)\s*$")
 
 
+def env_embed_kwargs() -> dict:
+    """운영과 **같은** 임베딩 백엔드·모델 인자. Recommender 를 만드는 모든 곳이 쓴다.
+
+    왜 함수인가: 이 표현이 파일마다 복사돼 있었고, 빠뜨린 곳들이 조용히 클래스 기본값
+    (로컬 MiniLM)으로 떨어졌다. 유사도 공간이 달라지면 같은 임계값·같은 코드가 다른
+    답을 낸다 — 실제로 두 번 당했다:
+
+      · embed_cos 게이트(2026-08-01): 하네스가 로컬만 평가해 운영에서 죽은 게이트를 놓침
+      · 자기개선 루프(2026-08-02): 대시보드 "모순 없음" 과 개선 큐 "모순 1건" 이 공존
+
+    일부러 모델을 바꿔 비교하는 A/B(scripts/ab_embedding_models.py)만 예외다.
+    """
+    import os as _os
+    backend = _os.getenv("RVP_EMBED_BACKEND", "fastembed")
+    return {"embed_backend": backend,
+            "embed_model": (_os.getenv("RVP_EMBED_MODEL", "")
+                            or ("baai/bge-m3" if backend == "openrouter" else ""))}
+
+
 def template_key(summary: str) -> str:
     s = _PREFIX.sub("", summary or "")
     s = _SUFFIX.sub("", s)
@@ -129,8 +148,15 @@ class Recommender:
     verified_tiebreak: float = 1e-4      # 검증 완료(✅+🙌) 사례 동점 시 우선 노출(M2).
     # 1e-4 근거: 텍스트/메타 신호(RRF≈0.03, boost 0.15)를 절대 덮지 않는 크기 —
     # 점수가 사실상 같을 때만 검증 사례를 위로 올리는 순수 tie-breaker.
-    embed_model: str = ""                 # "" → 기본 MiniLM. 교체 가능(e5-large, bge-m3 등).
-    embed_backend: str = "fastembed"      # fastembed(로컬) | openrouter(API)
+    # 임베딩 백엔드·모델. **미지정이면 환경변수를 따른다**(__post_init__ 에서 채움) —
+    # 명시하지 않은 호출부가 조용히 로컬 MiniLM 으로 떨어지는 것을 막기 위해서다.
+    # 예전에는 클래스 기본값이 곧 MiniLM 이었고, 인자를 빠뜨린 곳들이 운영(bge-m3)과
+    # **다른 유사도 공간**에서 KB 를 봤다. 같은 임계값·같은 코드가 다른 답을 냈고,
+    # 두 번 당했다: embed_cos 게이트 무동작(08-01), 대시보드와 개선 큐의 모순 불일치(08-02).
+    # 폴백 자체는 남긴다(키·네트워크 없이 도는 테스트가 있다) — 다만 **조용하지 않게** 한다.
+    # 명시 인자가 항상 이긴다(모델을 일부러 바꿔 비교하는 A/B 를 위해).
+    embed_model: str | None = None        # None → 환경변수, "" → 클래스 기본(MiniLM)
+    embed_backend: str | None = None      # None → 환경변수, 그 외 fastembed|openrouter
     # ---- 2차 재순위(reranker) — cross-encoder로 1차 top-N 재채점 ----
     rerank: bool = False                  # True → recommend()에서 top-N 재순위 + 강도 게이트
     rerank_model: str = "cohere/rerank-v3.5"
@@ -178,6 +204,12 @@ class Recommender:
     }
 
     def __post_init__(self):
+        # 미지정(None)이면 환경변수 → 운영과 같은 유사도 공간. 명시 인자가 있으면 그대로.
+        env = env_embed_kwargs()
+        if self.embed_backend is None:
+            self.embed_backend = env["embed_backend"]
+        if self.embed_model is None:
+            self.embed_model = env["embed_model"]
         if self.gate_cos == type(self).gate_cos:  # 사용자가 명시하지 않았을 때만 보정
             self.gate_cos = self._GATE_COS_BY_MODEL.get(
                 self._model_name().lower(), self.gate_cos)
@@ -193,8 +225,10 @@ class Recommender:
                 self._init_embed()
             except Exception as e:
                 fallback = "bm25" if self.method == "embed" else "hybrid"
-                print(f"[recommender] 임베딩({self.embed_backend}/{self._model_name()}) "
-                      f"초기화 실패 → '{self.method}'→'{fallback}' 폴백: {str(e)[:120]}")
+                print(f"[recommender] ⚠ 임베딩({self.embed_backend}/{self._model_name()}) "
+                      f"초기화 실패 → '{self.method}'→'{fallback}' 폴백: {str(e)[:120]}\n"
+                      f"[recommender] ⚠ 이 인스턴스의 검색 결과는 운영과 다르다 — "
+                      f"평가·튜닝 수치로 쓰지 말 것.")
                 self.method = fallback
                 self.signals = False
                 self._embedder = None

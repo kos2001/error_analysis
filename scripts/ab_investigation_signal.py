@@ -29,7 +29,7 @@ ROOT = Path(__file__).resolve().parent.parent
 _sys.path.insert(0, str(ROOT / "src"))
 
 from preprocess import parse_issue  # noqa: E402
-from recommender import Recommender, template_key  # noqa: E402
+from recommender import Recommender, env_embed_kwargs, template_key  # noqa: E402
 
 ALL_RAW = ROOT / "data" / "all_raw_issues.json"
 EVAL = ROOT / "data" / "eval_paraphrase.json"
@@ -87,7 +87,7 @@ def main() -> int:
     print("-" * 71)
     results = {}
     for m in [x.strip() for x in args.methods.split(",") if x.strip()]:
-        rec = Recommender(resolved, method=m)  # doc 표현은 기본(report+analysis) 고정
+        rec = Recommender(resolved, method=m, **env_embed_kwargs())  # doc 표현은 기본 고정
         b = _metrics(rec, base_qs)
         a = _metrics(rec, m1_qs)
         results[m] = {"baseline": b, "m1_investigation": a}

@@ -24,7 +24,8 @@ ROOT = Path(__file__).resolve().parent.parent
 _sys.path.insert(0, str(ROOT / "src"))
 
 from preprocess import parse_issue  # noqa: E402
-from recommender import Recommender, template_key, _doc_text  # noqa: E402
+from recommender import (Recommender, env_embed_kwargs, template_key,  # noqa: E402
+                         _doc_text)
 from reranker import rerank, DEFAULT_MODEL  # noqa: E402
 
 ALL_RAW = ROOT / "data" / "all_raw_issues.json"
@@ -55,7 +56,7 @@ def main() -> int:
     raw = json.load(ALL_RAW.open())
     resolved = [parse_issue(r) for r in raw if r.get("status") == RESOLVED_STATUS]
     ds = json.load(EVAL.open())
-    rec = Recommender(resolved, method="hybrid_embed")  # 1차: 현재 채택 방식
+    rec = Recommender(resolved, method="hybrid_embed", **env_embed_kwargs())  # 1차: 현재 채택 방식
     kb = rec.kb
     print(f"[ab-rerank] KB(해결) {len(resolved)} · paraphrase {len(ds['positives'])}pos/{len(ds['negatives'])}neg"
           f" · 1차 top-N={args.n} · rerank={args.model}")

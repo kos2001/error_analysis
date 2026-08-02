@@ -26,7 +26,7 @@ from pydantic import BaseModel, Field
 
 from lang_validator import validate_and_fix  # noqa: E402
 from preprocess import parse_issue  # noqa: E402
-from recommender import Recommender, template_key  # noqa: E402
+from recommender import Recommender, env_embed_kwargs, template_key  # noqa: E402
 import app_config  # noqa: E402
 import mcp_server  # noqa: E402
 import auth  # noqa: E402
@@ -193,10 +193,7 @@ def _build_reco_state() -> dict:
             # 동일 조건 16건 중앙 bge-m3@API 646ms vs e5@local 1138ms (p90 1036 vs 1793).
             # ONNX CPU 추론이 요청 스레드풀과 경쟁해 네트워크 왕복보다 비싸진다.
             # 격리 벤치로 서버 지연을 예측하지 말 것(claudedocs/performance_backlog.md E-0).
-            embed_backend=os.getenv("RVP_EMBED_BACKEND", "fastembed"),
-            embed_model=(os.getenv("RVP_EMBED_MODEL", "")
-                         or ("baai/bge-m3" if os.getenv("RVP_EMBED_BACKEND", "") == "openrouter"
-                             else "")),
+            **env_embed_kwargs(),
             # 파라미터 override(미설정 시 클래스 기본값 — 현행과 동일).
             # 주의: RVP_BOOST 는 현 KB 에서 **효과가 없다**(0.30~0.00 동일, 2026-08-02
             # 실측). 튜닝 대상으로 삼지 말 것 — 근거는 recommender.boost 주석 참조.
