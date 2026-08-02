@@ -90,6 +90,10 @@ def analyse(md: str, evidence_keys: list[str], self_key: str = "") -> dict:
         "sections_total": len(REQUIRED_SECTIONS),
         "missing_sections": [n for n, ok in sections.items() if not ok],
         "concrete_hits": len(CONCRETE_RE.findall(md)),
+        # 근거/배경/추정 구분 — 사례에 없는 내용을 (배경)/(추정)으로 표시하는가.
+        # 표시가 없으면 엔지니어가 검증된 사례와 일반 지식을 구분할 수 없다.
+        "labeled_background": md.count("(배경)"),
+        "labeled_estimate": md.count("(추정)"),
         "han_chars": find_violations(md),
     }
 
@@ -121,9 +125,19 @@ def judge(md: str, ctx: str) -> dict | None:
             output_schema=Verdict, use_json_mode=True, markdown=False, telemetry=False,
             instructions=[
                 "너는 LSI 칩/펌웨어 분석 리뷰어다. 관대하게 주지 마라.",
-                "grounding: 제공된 근거 사례에서 확인되지 않는 주장은 감점한다.",
+                # 제품 규약과 판정 기준을 맞춘다. 분석문은 사례에 없는 내용을
+                # `(배경)`·`(추정)` 으로 **표시하도록** 요구받는다. 표시된 문장을
+                # 위반으로 세면, 투명하게 표시할수록 점수가 깎이는 역설이 생긴다
+                # (실측: 라벨 도입 후 판정 8.5 → 7.25, 지적 6 → 12건).
+                "이 분석문은 규약을 따른다: 사례로 확인되는 주장에는 (LSI-49) 같은 "
+                "인라인 인용을 달고, 사례에 없는 배경 설명은 문장 앞에 `(배경)`, "
+                "이 이슈에 대한 추정은 `(추정)` 을 붙인다.",
+                "grounding: **표시 없이** 사례에서 확인되지 않는 주장을 단정하면 감점한다. "
+                "`(배경)`·`(추정)` 으로 올바르게 표시된 문장은 위반이 아니다 — 오히려 "
+                "구분이 명확하므로 가점 요소다.",
                 "actionability: '상황에 따라 다름' 류의 일반론은 감점, 구체적 절차·수치는 가점.",
-                "unsupported_claims 에는 근거에서 확인 안 되는 문장을 그대로 옮겨라.",
+                "unsupported_claims 에는 **표시 없이** 단정한, 근거에서 확인 안 되는 "
+                "문장만 그대로 옮겨라. (배경)/(추정) 이 붙은 문장은 넣지 마라.",
             ])
         out = agent.run(input=f"## 근거 사례\n{ctx}\n\n## 검토할 분석\n{md}")
         v = out.content
@@ -180,6 +194,8 @@ def main() -> int:
         "환각_인용_건수": sum(len(r["hallucinated_citations"]) for r in rows),
         "한자_혼입_건수": sum(1 for r in rows if r["han_chars"]),
         "구체성_평균": round(sum(r["concrete_hits"] for r in rows) / n, 1),
+        "배경_표시_평균": round(sum(r["labeled_background"] for r in rows) / n, 1),
+        "추정_표시_평균": round(sum(r["labeled_estimate"] for r in rows) / n, 1),
         "분량_평균": round(sum(r["chars"] for r in rows) / n),
         "캐시_히트": sum(1 for r in rows if r["cached"]),
     }
