@@ -1500,6 +1500,7 @@ def explain_cached(key: str, k: int = 4):
         raise HTTPException(status_code=404, detail=f"이슈 {key} 없음")
     result = _recommend_cached(query_rec, k=k, exclude_key=key)
     if not result["matches"] or not result.get("coverage", True):
+        _record_gap(query_rec, result, "explain_no_coverage")
         return {"cached": False, "coverage": False, "gate": result.get("gate"),
                 "reason": "게이트 미통과 — 근거가 부족해 분석을 생성하지 않습니다"}
     match_recs = [st["by_key"].get(m["key"], m) for m in result["matches"]]
@@ -1510,6 +1511,28 @@ def explain_cached(key: str, k: int = 4):
                 "reason": "저장된 분석이 없습니다 — analyze_issue 의 근거로 직접 분석하세요"}
     return {"cached": True, "coverage": True, "markdown": hit.get("markdown", ""),
             "citations": hit.get("citations", [])}
+
+
+def _record_gap(query_rec: dict, result: dict, reason: str) -> None:
+    """coverage 게이트에 막힌 **사용자 요청**을 공백 신호로 남긴다.
+
+    한 곳(/recommend)에만 붙여 뒀더니 정작 신호가 가장 센 순간 — 사용자가 자동 RCA 를
+    요청했다가 "사례 없음" 으로 거절당하는 순간 — 이 기록되지 않았다. 게이트가 막는
+    자리마다 부른다.
+
+    부르지 않는 곳: **예열 배치**(_prewarm_once). 사람이 물어본 게 아니라 전량 훑기라,
+    기록하면 KB 전체가 공백으로 들어와 "자주 묻는 영역" 신호를 덮는다.
+    """
+    try:
+        gate = result.get("gate") or {}
+        knowledge_gaps.record(
+            query_rec, reason=reason,
+            template=template_key(query_rec.get("summary", "")),
+            # 게이트 dict 의 강도 키는 신호에 따라 다르다(rerank_top / max_cos).
+            top_score=(gate.get("rerank_top") or gate.get("max_cos"))
+                      if isinstance(gate, dict) else None)
+    except Exception:
+        pass          # 관측성 때문에 본 요청이 실패하면 안 된다
 
 
 _DEMOTED = ("deprecated", "superseded")
@@ -1593,16 +1616,7 @@ def recommend(req: RecommendRequest):
     }
     # 지식 공백 관측성(P3-8): coverage 미통과 질의를 공백 신호로 기록(자기 개선 loop 입력)
     if not out["coverage"]:
-        try:
-            gate = result.get("gate") or {}
-            knowledge_gaps.record(query_rec, reason="no_coverage",
-                                  template=template_key(query_rec.get("summary", "")),
-                                  # 게이트 dict 의 강도 키는 신호에 따라 다르다
-                                  # (rerank_top / max_cos). top_score 는 없는 키였다.
-                                  top_score=(gate.get("rerank_top") or gate.get("max_cos"))
-                                            if isinstance(gate, dict) else None)
-        except Exception:
-            pass
+        _record_gap(query_rec, result, "no_coverage")
     # 게이트 미통과 시 LLM 설명 생성 안 함 (무관 사례 기반 환각 방지)
     if req.explain and result["matches"] and out["coverage"]:
         ex = _llm_explain(query_rec, result["matches"])
@@ -1750,6 +1764,8 @@ def rca_draft(req: KeyBody):
         return _not_queued("resolved", "이미 해결(완료)된 이슈입니다 — 미해결 이슈만 RCA 대상입니다.")
     result = st["reco"].recommend(rec, k=4, exclude_key=req.key)
     if not result["matches"] or not result.get("coverage"):
+        # 사용자가 자동 RCA 를 원했는데 근거가 없어 거절한 자리 — 공백 신호가 가장 센 지점이다.
+        _record_gap(rec, result, "rca_refused")
         return _not_queued("no_coverage",
                            "유사 과거 사례가 없습니다(coverage 게이트 미통과). 근거 없는 자동 RCA를 막기 위해 "
                            "초안을 만들지 않았습니다 — 시니어 직접 검토가 필요합니다. (대안: '✨ AI 심층 분석' 후 "
