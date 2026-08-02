@@ -21,6 +21,7 @@ type Match = {
 type Proposal = { root_cause: string; resolution: string; workaround: string; based_on: string; confidence: number };
 type Gate = {
   signal: string; passed: boolean;
+  available?: boolean; reason?: string; candidates?: number;   // signal="none"(판정 불가)
   rerank_top?: number; threshold?: number;
   max_cos?: number; cos_threshold?: number; top_entity_overlap?: number;
 };
@@ -77,6 +78,16 @@ function MatchSkeleton() {
 
 /** 게이트가 왜 막았는지를 수치로 보여준다 — "사례 없음"만 띄우면 신뢰가 안 생긴다. */
 function GateDetail({ gate }: { gate: Gate }) {
+  // 판정 신호가 없을 때는 보여줄 수치가 없다 — 수치 자리에 이유를 적는다.
+  if (gate.signal === "none") {
+    return (
+      <div className="mt-2 text-[11px] text-amber-400/90">
+        <span className="font-semibold">판정 근거:</span> 없음 — 재순위·임베딩 서비스를
+        모두 사용할 수 없습니다. 후보 {gate.candidates ?? 0}건은 아래에 있지만
+        관련도를 검증하지 못했습니다.
+      </div>
+    );
+  }
   const rows = gate.signal === "rerank"
     ? [["재순위 최고 관련도", gate.rerank_top], ["통과 임계", gate.threshold]]
     : [["임베딩 최고 유사도", gate.max_cos], ["통과 임계", gate.cos_threshold],
@@ -676,15 +687,32 @@ export default function FailureAnalysis({ onQueueChange, routeKey, onSelectKey, 
                   // 다크 UI 에 홀로 남아 있던 라이트 패널 — 화면에서 이 블록만
                   // 하얗게 튀었다. 위쪽 오류 패널(red-950/40)과 같은 규칙으로 맞춘다.
                   <div className="rounded-xl border border-amber-900/60 bg-amber-950/40 p-5 text-sm text-amber-300">
-                    <div className="font-semibold">⚠️ 유사한 과거 해결 사례를 찾지 못했습니다.</div>
-                    <p className="mt-1 leading-relaxed">
-                      이 고장 유형은 처음 보고된 것일 수 있습니다. 근거 없는 추측을 막기 위해
-                      AI 제안·심층 분석을 생성하지 않았습니다 — <b>시니어 검토가 필요합니다.</b>
-                    </p>
+                    {reco.gate?.signal === "none" ? (
+                      <>
+                        {/* 사례가 없는 것과 판정을 못 하는 것은 다르다 — 같은 문구로
+                            뭉뚱그리면 사용자가 "이 고장은 처음이구나" 로 잘못 읽는다. */}
+                        <div className="font-semibold">⚠️ 지금은 관련도를 판정할 수 없습니다.</div>
+                        <p className="mt-1 leading-relaxed">
+                          재순위·임베딩 서비스가 일시적으로 응답하지 않아, 찾은 후보가
+                          실제로 관련 있는지 확인하지 못했습니다. 근거 없는 분석을 막기 위해
+                          AI 제안·심층 분석을 생성하지 않았습니다 —
+                          <b> 잠시 후 다시 시도</b>하거나 아래 후보를 직접 확인하세요.
+                        </p>
+                      </>
+                    ) : (
+                      <>
+                        <div className="font-semibold">⚠️ 유사한 과거 해결 사례를 찾지 못했습니다.</div>
+                        <p className="mt-1 leading-relaxed">
+                          이 고장 유형은 처음 보고된 것일 수 있습니다. 근거 없는 추측을 막기 위해
+                          AI 제안·심층 분석을 생성하지 않았습니다 — <b>시니어 검토가 필요합니다.</b>
+                        </p>
+                      </>
+                    )}
                     {reco.gate && <GateDetail gate={reco.gate} />}
                     <div className="mt-3 border-t border-amber-900/60 pt-2 text-[11px] text-amber-300/80">
-                      이 질의는 <b>지식 공백</b>으로 기록되어 어떤 고장 유형의 사례가 부족한지 집계됩니다
-                      (지식 현황 → 지식 공백).
+                      {reco.gate?.signal === "none"
+                        ? "일시 장애로 판정하지 못한 질의라 지식 공백으로 세지 않습니다 — 서비스가 돌아오면 다시 눌러 주세요."
+                        : <>이 질의는 <b>지식 공백</b>으로 기록되어 어떤 고장 유형의 사례가 부족한지 집계됩니다 (지식 현황 → 지식 공백).</>}
                       {reco.matches.length > 0 && (
                         <> 참고용 하위 후보 {reco.matches.length}건은 아래에 접어 두었습니다.</>
                       )}

@@ -159,12 +159,84 @@ def test_metrics_exposes_degraded() -> None:
         users.unlink(missing_ok=True)
 
 
+def test_fail_closed_without_signals() -> None:
+    """판정 신호가 하나도 없으면 **닫힌 채로 실패**하는가.
+
+    임베딩과 재순위는 둘 다 외부 API 다 — 게이트웨이가 죽으면 동시에 없어진다.
+    예전에는 이때 gate=None, coverage=bool(matches) 라 **무조건 통과**였다.
+    BM25 는 무관 질의에도 늘 무언가를 돌려주므로, 구내식당 결제 문의에 칩 고장 사례가
+    붙고 그 위에 LLM 근본원인이 생성됐다 — 게이트가 막으려던 바로 그 환각이다.
+    """
+    print("\n[판정 신호 없음 → 차단]")
+    STATE.update(fail=True, calls=0)
+    orig = Recommender._init_embed
+    Recommender._init_embed = lambda self: (_ for _ in ()).throw(RuntimeError("임베딩 다운"))
+    try:
+        rec = Recommender(KB, method="hybrid_embed", rerank=False, signals=True,
+                          embed_backend="fastembed", embed_model="")
+    finally:
+        Recommender._init_embed = orig
+
+    check("임베딩 실패 시 method 강등", rec.method == "hybrid", rec.method)
+    junk = {"summary": "구내식당 모바일 주문 결제가 취소로 처리됨",
+            "symptom": "카드 승인은 났는데 주문이 사라짐", "chip": "", "category": ""}
+    res = rec.recommend(junk, k=3)
+    g = res.get("gate") or {}
+    check("무관 질의가 통과하지 않는다", res["coverage"] is False, str(res["coverage"]))
+    check("판정 불가를 명시한다", g.get("signal") == "none", str(g))
+    check("available=False", g.get("available") is False, str(g))
+    check("이유를 남긴다", bool(g.get("reason")), str(g))
+    check("후보는 숨기지 않는다", g.get("candidates", 0) > 0 and len(res["matches"]) > 0,
+          f"candidates={g.get('candidates')} matches={len(res['matches'])}")
+    check("제안은 만들지 않는다", res.get("proposal") is None, str(res.get("proposal"))[:60])
+
+    # 정상 질의도 마찬가지로 막힌다 — 판정을 못 하는 것이지 봐주는 게 아니다
+    real = {"summary": "[PM9C3-NVMe] 고온 지속 쓰기 중 timeout", "symptom": "link down",
+            "chip": "", "category": ""}
+    check("정상 질의도 동일하게 차단(일관성)",
+          rec.recommend(real, k=3)["coverage"] is False)
+
+
+def test_gap_not_recorded_when_undecidable() -> None:
+    """판정 불가는 '지식 공백' 이 아니다 — 장애 트래픽이 통계를 오염시키면 안 된다."""
+    print("\n[판정 불가는 공백으로 세지 않는다]")
+    import os
+    import tempfile
+    users = Path(tempfile.mkdtemp()) / "u.yaml"
+    users.write_text("users:\n  - id: admin\n    name: 관리자\n    role: admin\n",
+                     encoding="utf-8")
+    os.environ.update({"RVP_JIRA_POLL_SEC": "0", "RVP_PREWARM": "0", "RVP_AUTH_DEV_LOGIN": "1",
+                       "RVP_SESSION_SECRET": "gap-undec", "RVP_USERS_FILE": str(users),
+                       "RVP_MCP": "0"})
+    sys.path.insert(0, str(ROOT / "backend"))
+    import knowledge_gaps as KG                                # noqa: E402
+    KG.STORE_FILE = users.parent / "gaps.json"
+    KG.DEDUP_SEC = 0.0
+    import server                                              # noqa: E402
+    from fastapi.testclient import TestClient                  # noqa: E402
+    server._reload_users()
+    junk = {"summary": "주차 차단기가 야간에만 안 열림", "symptom": "번호 인식 실패", "k": 3}
+    with TestClient(server.app) as c:
+        c.post("/auth/dev-login", json={"email": "admin"})
+        c.post("/recommend", json=junk)
+        n_normal = len(KG._load())
+        check("정상 상태의 무관 질의는 공백으로 기록", n_normal >= 1, str(n_normal))
+
+        reco = server._reco_state()["reco"]
+        reco.rerank, reco.method, reco.signals, reco._kb_emb = False, "hybrid", False, None
+        c.post("/recommend", json={**junk, "summary": junk["summary"] + " 재질의"})
+        check("판정 불가는 공백에 안 들어간다", len(KG._load()) == n_normal,
+              f"{n_normal} → {len(KG._load())}")
+
+
 if __name__ == "__main__":
     test_trips_after_limit()
     test_self_recovery()
     test_still_broken_retrips_without_storm()
     test_retry_disabled()
+    test_fail_closed_without_signals()
     test_metrics_exposes_degraded()
+    test_gap_not_recorded_when_undecidable()
     print("\n" + "=" * 56)
     if FAILS:
         print(f"실패 {len(FAILS)}건: " + " / ".join(FAILS))

@@ -1543,6 +1543,12 @@ def _record_gap(query_rec: dict, result: dict, reason: str) -> None:
     """
     try:
         gate = result.get("gate") or {}
+        # 판정 불가(signal="none")는 **공백이 아니다.** 사례가 부족한 게 아니라 재순위·
+        # 임베딩이 죽어 판정을 못 한 것이다. 이걸 세면 게이트웨이 장애 한 번에
+        # "자주 묻지만 사례 없는 영역" 통계가 그날 트래픽으로 통째로 오염된다 —
+        # 예열 배치를 빼는 것과 같은 이유다.
+        if gate.get("signal") == "none":
+            return
         knowledge_gaps.record(
             query_rec, reason=reason,
             template=template_key(query_rec.get("summary", "")),
