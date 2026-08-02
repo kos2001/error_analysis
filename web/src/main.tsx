@@ -66,6 +66,15 @@ function Shell() {
 
   return (
     <div className="h-screen flex flex-col bg-zinc-950 text-zinc-200">
+      {/* 본문 바로가기 — 이슈 목록이 통째로 탭 순서에 들어가서, 키보드로 본문까지
+          가려면 Tab 을 273번 눌러야 했다(실측). 평소엔 화면 밖에 숨고 포커스를
+          받으면 나타난다. */}
+      <a href="#main-content"
+        className="sr-only focus:not-sr-only focus:absolute focus:left-3 focus:top-3 focus:z-50
+                   focus:rounded-lg focus:bg-sky-600 focus:px-3 focus:py-2 focus:text-sm
+                   focus:font-medium focus:text-white focus:outline-none focus:ring-2 focus:ring-sky-300">
+        본문 바로가기
+      </a>
       <nav className="flex shrink-0 items-center gap-1 border-b border-zinc-800 bg-zinc-950 px-4 h-14">
         <button onClick={() => go({ view: "app" })} title="홈(분석 화면)으로"
           className="mr-4 text-left outline-none focus-visible:ring-1 focus-visible:ring-sky-500 rounded">
@@ -97,7 +106,10 @@ function Shell() {
           </div>
         )}
       </nav>
-      <div className="flex-1 min-h-0">
+      {/* tabIndex=-1 이라야 바로가기 링크로 포커스가 실제로 옮겨간다(클릭만으로는
+          스크롤만 되고 탭 순서는 링크 자리에 남는다). 화면별로 <main> 유무가 달라
+          공통 컨테이너에 건다. */}
+      <div id="main-content" tabIndex={-1} className="flex-1 min-h-0 outline-none">
         {authLoading ? (
           <div className="h-full flex items-center justify-center text-zinc-400 text-sm">인증 확인 중…</div>
         ) : !me ? (
