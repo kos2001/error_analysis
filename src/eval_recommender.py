@@ -31,7 +31,7 @@ _sys.path.insert(0, str(ROOT / "src"))
 
 import ingest          # noqa: E402
 from preprocess import parse_issue  # noqa: E402
-from recommender import Recommender, template_key  # noqa: E402
+from recommender import Recommender, env_embed_kwargs, template_key  # noqa: E402
 
 ALL_RAW = ROOT / "data" / "all_raw_issues.json"
 RESOLVED_STATUS = "완료"
@@ -172,12 +172,7 @@ def main() -> int:
             # 하네스가 클래스 기본값(로컬 fastembed)만 평가하면 운영 설정(openrouter)의
             # 회귀를 놓친다(2026-08-01 embed_cos 게이트 무동작 사례).
             rec = Recommender(resolved, method=m,
-                              embed_backend=os.getenv("RVP_EMBED_BACKEND", "fastembed"),
-                              embed_model=(os.getenv("RVP_EMBED_MODEL", "")
-                                           or ("baai/bge-m3"
-                                               if os.getenv("RVP_EMBED_BACKEND", "") == "openrouter"
-                                               else "")),
-                              **kw)
+                              **env_embed_kwargs(), **kw)
             tag = f"{m}|{st}" + (f"|b{args.boost}" if args.boost is not None else "")
             loo_r = evaluate(rec, resolved, kb_keys, loo=True)
             unr_r = evaluate(rec, unresolved, kb_keys, loo=False)
@@ -219,12 +214,7 @@ def main() -> int:
             if args.both_gates and args.rerank:
                 kw_off = {k: v for k, v in kw.items() if k != "rerank"}
                 rec_off = Recommender(resolved, method=m,
-                                      embed_backend=os.getenv("RVP_EMBED_BACKEND", "fastembed"),
-                                      embed_model=(os.getenv("RVP_EMBED_MODEL", "")
-                                                   or ("baai/bge-m3"
-                                                       if os.getenv("RVP_EMBED_BACKEND", "") == "openrouter"
-                                                       else "")),
-                                      **kw_off)
+                                      **env_embed_kwargs(), **kw_off)
                 off_sets = dict(extra_sets)
                 if para_ds is not None:
                     off_sets = {"paraphrase": para_ds, **off_sets}

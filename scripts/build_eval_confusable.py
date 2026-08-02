@@ -34,7 +34,8 @@ ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT / "src"))
 
 from preprocess import parse_issue          # noqa: E402
-from recommender import Recommender, template_key, _doc_text  # noqa: E402
+from recommender import (Recommender, env_embed_kwargs, template_key,  # noqa: E402
+                         _doc_text)
 
 ALL_RAW = ROOT / "data" / "all_raw_issues.json"
 
@@ -82,7 +83,8 @@ def _reword(rep: dict, timeout: int = 60) -> dict | None:
 def build(min_sim: float, max_items: int, paraphrase: bool = False) -> dict:
     raw = json.loads(ALL_RAW.read_text(encoding="utf-8"))
     resolved = [r for r in (parse_issue(x) for x in raw) if r["status"] == "완료"]
-    rec = Recommender(resolved, method="hybrid_embed", rerank=False, signals=True)
+    rec = Recommender(resolved, method="hybrid_embed", rerank=False, signals=True,
+                      **env_embed_kwargs())
     if rec._kb_emb is None:
         raise SystemExit("임베딩을 만들 수 없어 중단 — 혼동 후보를 고를 수 없습니다.")
 
