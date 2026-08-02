@@ -22,9 +22,10 @@
     },
     "action_hint": "POST /knowledge/known-issue (members 승격)",
     "id": "S-1",
-    "state": "open",
+    "state": "superseded",
     "created_at": "2026-06-17T09:00:15",
-    "updated_at": "2026-07-02T09:00:07"
+    "updated_at": "2026-08-02T19:09:37",
+    "superseded_reason": "최신 생성분에 더 이상 나타나지 않음"
   },
   {
     "type": "promote_known_issue",
@@ -48,9 +49,10 @@
     },
     "action_hint": "POST /knowledge/known-issue (members 승격)",
     "id": "S-2",
-    "state": "open",
+    "state": "superseded",
     "created_at": "2026-06-17T09:00:15",
-    "updated_at": "2026-07-02T09:00:07"
+    "updated_at": "2026-08-02T19:09:37",
+    "superseded_reason": "최신 생성분에 더 이상 나타나지 않음"
   },
   {
     "type": "promote_known_issue",
@@ -74,9 +76,10 @@
     },
     "action_hint": "POST /knowledge/known-issue (members 승격)",
     "id": "S-3",
-    "state": "open",
+    "state": "superseded",
     "created_at": "2026-06-17T09:00:15",
-    "updated_at": "2026-07-02T09:00:07"
+    "updated_at": "2026-08-02T19:09:37",
+    "superseded_reason": "최신 생성분에 더 이상 나타나지 않음"
   },
   {
     "type": "promote_known_issue",
@@ -99,9 +102,10 @@
     },
     "action_hint": "POST /knowledge/known-issue (members 승격)",
     "id": "S-4",
-    "state": "open",
+    "state": "superseded",
     "created_at": "2026-06-17T09:00:15",
-    "updated_at": "2026-07-02T09:00:07"
+    "updated_at": "2026-08-02T19:09:37",
+    "superseded_reason": "최신 생성분에 더 이상 나타나지 않음"
   },
   {
     "type": "promote_known_issue",
@@ -124,9 +128,10 @@
     },
     "action_hint": "POST /knowledge/known-issue (members 승격)",
     "id": "S-5",
-    "state": "open",
+    "state": "superseded",
     "created_at": "2026-06-17T09:00:15",
-    "updated_at": "2026-07-02T09:00:07"
+    "updated_at": "2026-08-02T19:09:37",
+    "superseded_reason": "최신 생성분에 더 이상 나타나지 않음"
   },
   {
     "type": "promote_known_issue",
@@ -149,9 +154,10 @@
     },
     "action_hint": "POST /knowledge/known-issue (members 승격)",
     "id": "S-6",
-    "state": "open",
+    "state": "superseded",
     "created_at": "2026-06-17T09:00:15",
-    "updated_at": "2026-07-02T09:00:07"
+    "updated_at": "2026-08-02T19:09:37",
+    "superseded_reason": "최신 생성분에 더 이상 나타나지 않음"
   },
   {
     "type": "promote_known_issue",
@@ -174,15 +180,16 @@
     },
     "action_hint": "POST /knowledge/known-issue (members 승격)",
     "id": "S-7",
-    "state": "open",
+    "state": "superseded",
     "created_at": "2026-06-17T09:00:15",
-    "updated_at": "2026-07-02T09:00:07"
+    "updated_at": "2026-08-02T19:09:37",
+    "superseded_reason": "최신 생성분에 더 이상 나타나지 않음"
   },
   {
     "type": "promote_known_issue",
-    "priority": "P2",
+    "priority": "P3",
     "target": "LSI-106",
-    "rationale": "유사도 0.869로 묶인 5건 중복 사례 — 정규 기사로 승격 권장",
+    "rationale": "유사도 0.869로 묶인 5건 중복 사례 — 정규 기사로 승격 권장. 검색 정확도는 바뀌지 않고(실측) 매치에 '알려진 고장모드' 주석이 붙어 읽는 사람이 중복임을 알 수 있다.",
     "evidence": {
       "members": [
         "LSI-106",
@@ -201,7 +208,7 @@
     "id": "S-8",
     "state": "open",
     "created_at": "2026-06-17T09:00:15",
-    "updated_at": "2026-08-02T09:00:15"
+    "updated_at": "2026-08-02T19:09:37"
   },
   {
     "type": "promote_known_issue",
@@ -224,9 +231,10 @@
     },
     "action_hint": "POST /knowledge/known-issue (members 승격)",
     "id": "S-9",
-    "state": "open",
+    "state": "superseded",
     "created_at": "2026-06-17T09:00:15",
-    "updated_at": "2026-08-02T09:00:15"
+    "updated_at": "2026-08-02T19:09:37",
+    "superseded_reason": "최신 생성분에 더 이상 나타나지 않음"
   },
   {
     "type": "promote_known_issue",
@@ -248,9 +256,10 @@
     },
     "action_hint": "POST /knowledge/known-issue (members 승격)",
     "id": "S-10",
-    "state": "open",
+    "state": "superseded",
     "created_at": "2026-06-17T09:00:15",
-    "updated_at": "2026-07-31T09:00:05"
+    "updated_at": "2026-08-02T19:09:37",
+    "superseded_reason": "최신 생성분에 더 이상 나타나지 않음"
   },
   {
     "type": "promote_known_issue",
@@ -272,9 +281,10 @@
     },
     "action_hint": "POST /knowledge/known-issue (members 승격)",
     "id": "S-11",
-    "state": "open",
+    "state": "superseded",
     "created_at": "2026-06-17T09:00:15",
-    "updated_at": "2026-07-02T09:00:07"
+    "updated_at": "2026-08-02T19:09:37",
+    "superseded_reason": "최신 생성분에 더 이상 나타나지 않음"
   },
   {
     "type": "promote_known_issue",
@@ -296,9 +306,10 @@
     },
     "action_hint": "POST /knowledge/known-issue (members 승격)",
     "id": "S-12",
-    "state": "open",
+    "state": "superseded",
     "created_at": "2026-06-17T09:00:15",
-    "updated_at": "2026-07-02T09:00:07"
+    "updated_at": "2026-08-02T19:09:37",
+    "superseded_reason": "최신 생성분에 더 이상 나타나지 않음"
   },
   {
     "type": "promote_known_issue",
@@ -320,9 +331,10 @@
     },
     "action_hint": "POST /knowledge/known-issue (members 승격)",
     "id": "S-13",
-    "state": "open",
+    "state": "superseded",
     "created_at": "2026-06-17T09:00:15",
-    "updated_at": "2026-07-31T09:00:05"
+    "updated_at": "2026-08-02T19:09:37",
+    "superseded_reason": "최신 생성분에 더 이상 나타나지 않음"
   },
   {
     "type": "promote_known_issue",
@@ -344,9 +356,10 @@
     },
     "action_hint": "POST /knowledge/known-issue (members 승격)",
     "id": "S-14",
-    "state": "open",
+    "state": "superseded",
     "created_at": "2026-06-17T09:00:15",
-    "updated_at": "2026-08-02T09:00:15"
+    "updated_at": "2026-08-02T19:09:37",
+    "superseded_reason": "최신 생성분에 더 이상 나타나지 않음"
   },
   {
     "type": "promote_known_issue",
@@ -368,9 +381,10 @@
     },
     "action_hint": "POST /knowledge/known-issue (members 승격)",
     "id": "S-15",
-    "state": "open",
+    "state": "superseded",
     "created_at": "2026-06-17T09:00:15",
-    "updated_at": "2026-07-31T09:00:05"
+    "updated_at": "2026-08-02T19:09:37",
+    "superseded_reason": "최신 생성분에 더 이상 나타나지 않음"
   },
   {
     "type": "promote_known_issue",
@@ -392,9 +406,10 @@
     },
     "action_hint": "POST /knowledge/known-issue (members 승격)",
     "id": "S-16",
-    "state": "open",
+    "state": "superseded",
     "created_at": "2026-06-17T09:00:15",
-    "updated_at": "2026-07-02T09:00:07"
+    "updated_at": "2026-08-02T19:09:37",
+    "superseded_reason": "최신 생성분에 더 이상 나타나지 않음"
   },
   {
     "type": "promote_known_issue",
@@ -416,9 +431,10 @@
     },
     "action_hint": "POST /knowledge/known-issue (members 승격)",
     "id": "S-17",
-    "state": "open",
+    "state": "superseded",
     "created_at": "2026-06-17T09:00:15",
-    "updated_at": "2026-07-02T09:00:07"
+    "updated_at": "2026-08-02T19:09:37",
+    "superseded_reason": "최신 생성분에 더 이상 나타나지 않음"
   },
   {
     "type": "promote_known_issue",
@@ -439,9 +455,10 @@
     },
     "action_hint": "POST /knowledge/known-issue (members 승격)",
     "id": "S-18",
-    "state": "open",
+    "state": "superseded",
     "created_at": "2026-06-17T09:00:15",
-    "updated_at": "2026-07-31T09:00:05"
+    "updated_at": "2026-08-02T19:09:37",
+    "superseded_reason": "최신 생성분에 더 이상 나타나지 않음"
   },
   {
     "type": "promote_known_issue",
@@ -462,9 +479,10 @@
     },
     "action_hint": "POST /knowledge/known-issue (members 승격)",
     "id": "S-19",
-    "state": "open",
+    "state": "superseded",
     "created_at": "2026-06-17T09:00:15",
-    "updated_at": "2026-07-02T09:00:07"
+    "updated_at": "2026-08-02T19:09:37",
+    "superseded_reason": "최신 생성분에 더 이상 나타나지 않음"
   },
   {
     "type": "promote_known_issue",
@@ -485,9 +503,10 @@
     },
     "action_hint": "POST /knowledge/known-issue (members 승격)",
     "id": "S-20",
-    "state": "open",
+    "state": "superseded",
     "created_at": "2026-06-17T09:00:15",
-    "updated_at": "2026-07-02T09:00:07"
+    "updated_at": "2026-08-02T19:09:37",
+    "superseded_reason": "최신 생성분에 더 이상 나타나지 않음"
   },
   {
     "type": "promote_known_issue",
@@ -508,9 +527,10 @@
     },
     "action_hint": "POST /knowledge/known-issue (members 승격)",
     "id": "S-21",
-    "state": "open",
+    "state": "superseded",
     "created_at": "2026-06-17T09:00:15",
-    "updated_at": "2026-07-02T09:00:07"
+    "updated_at": "2026-08-02T19:09:37",
+    "superseded_reason": "최신 생성분에 더 이상 나타나지 않음"
   },
   {
     "type": "resolve_contradiction",
@@ -527,7 +547,7 @@
     "id": "S-22",
     "state": "open",
     "created_at": "2026-06-17T09:00:15",
-    "updated_at": "2026-08-02T09:00:15"
+    "updated_at": "2026-08-02T19:09:37"
   },
   {
     "type": "normalize_ontology",
@@ -550,7 +570,7 @@
     "id": "S-23",
     "state": "open",
     "created_at": "2026-06-17T09:00:15",
-    "updated_at": "2026-08-02T09:00:15"
+    "updated_at": "2026-08-02T19:09:37"
   },
   {
     "type": "promote_known_issue",
@@ -575,9 +595,10 @@
     },
     "action_hint": "POST /knowledge/known-issue (members 승격)",
     "id": "S-24",
-    "state": "open",
+    "state": "superseded",
     "created_at": "2026-07-04T09:00:12",
-    "updated_at": "2026-07-31T09:00:05"
+    "updated_at": "2026-08-02T19:09:37",
+    "superseded_reason": "최신 생성분에 더 이상 나타나지 않음"
   },
   {
     "type": "promote_known_issue",
@@ -601,9 +622,10 @@
     },
     "action_hint": "POST /knowledge/known-issue (members 승격)",
     "id": "S-25",
-    "state": "open",
+    "state": "superseded",
     "created_at": "2026-07-04T09:00:12",
-    "updated_at": "2026-07-31T09:00:05"
+    "updated_at": "2026-08-02T19:09:37",
+    "superseded_reason": "최신 생성분에 더 이상 나타나지 않음"
   },
   {
     "type": "promote_known_issue",
@@ -627,9 +649,10 @@
     },
     "action_hint": "POST /knowledge/known-issue (members 승격)",
     "id": "S-26",
-    "state": "open",
+    "state": "superseded",
     "created_at": "2026-07-04T09:00:12",
-    "updated_at": "2026-07-31T09:00:05"
+    "updated_at": "2026-08-02T19:09:37",
+    "superseded_reason": "최신 생성분에 더 이상 나타나지 않음"
   },
   {
     "type": "promote_known_issue",
@@ -652,9 +675,10 @@
     },
     "action_hint": "POST /knowledge/known-issue (members 승격)",
     "id": "S-27",
-    "state": "open",
+    "state": "superseded",
     "created_at": "2026-07-04T09:00:12",
-    "updated_at": "2026-07-31T09:00:05"
+    "updated_at": "2026-08-02T19:09:37",
+    "superseded_reason": "최신 생성분에 더 이상 나타나지 않음"
   },
   {
     "type": "promote_known_issue",
@@ -677,9 +701,10 @@
     },
     "action_hint": "POST /knowledge/known-issue (members 승격)",
     "id": "S-28",
-    "state": "open",
+    "state": "superseded",
     "created_at": "2026-07-04T09:00:12",
-    "updated_at": "2026-07-31T09:00:05"
+    "updated_at": "2026-08-02T19:09:37",
+    "superseded_reason": "최신 생성분에 더 이상 나타나지 않음"
   },
   {
     "type": "promote_known_issue",
@@ -702,9 +727,10 @@
     },
     "action_hint": "POST /knowledge/known-issue (members 승격)",
     "id": "S-29",
-    "state": "open",
+    "state": "superseded",
     "created_at": "2026-07-04T09:00:12",
-    "updated_at": "2026-07-31T09:00:05"
+    "updated_at": "2026-08-02T19:09:37",
+    "superseded_reason": "최신 생성분에 더 이상 나타나지 않음"
   },
   {
     "type": "promote_known_issue",
@@ -727,9 +753,10 @@
     },
     "action_hint": "POST /knowledge/known-issue (members 승격)",
     "id": "S-30",
-    "state": "open",
+    "state": "superseded",
     "created_at": "2026-07-04T09:00:12",
-    "updated_at": "2026-07-31T09:00:05"
+    "updated_at": "2026-08-02T19:09:37",
+    "superseded_reason": "최신 생성분에 더 이상 나타나지 않음"
   },
   {
     "type": "promote_known_issue",
@@ -752,9 +779,10 @@
     },
     "action_hint": "POST /knowledge/known-issue (members 승격)",
     "id": "S-31",
-    "state": "open",
+    "state": "superseded",
     "created_at": "2026-07-04T09:00:12",
-    "updated_at": "2026-07-31T09:00:05"
+    "updated_at": "2026-08-02T19:09:37",
+    "superseded_reason": "최신 생성분에 더 이상 나타나지 않음"
   },
   {
     "type": "promote_known_issue",
@@ -777,9 +805,10 @@
     },
     "action_hint": "POST /knowledge/known-issue (members 승격)",
     "id": "S-32",
-    "state": "open",
+    "state": "superseded",
     "created_at": "2026-07-04T09:00:12",
-    "updated_at": "2026-07-31T09:00:05"
+    "updated_at": "2026-08-02T19:09:37",
+    "superseded_reason": "최신 생성분에 더 이상 나타나지 않음"
   },
   {
     "type": "promote_known_issue",
@@ -801,9 +830,10 @@
     },
     "action_hint": "POST /knowledge/known-issue (members 승격)",
     "id": "S-33",
-    "state": "open",
+    "state": "superseded",
     "created_at": "2026-07-04T09:00:12",
-    "updated_at": "2026-07-31T09:00:05"
+    "updated_at": "2026-08-02T19:09:37",
+    "superseded_reason": "최신 생성분에 더 이상 나타나지 않음"
   },
   {
     "type": "promote_known_issue",
@@ -825,9 +855,10 @@
     },
     "action_hint": "POST /knowledge/known-issue (members 승격)",
     "id": "S-34",
-    "state": "open",
+    "state": "superseded",
     "created_at": "2026-07-04T09:00:12",
-    "updated_at": "2026-07-31T09:00:05"
+    "updated_at": "2026-08-02T19:09:37",
+    "superseded_reason": "최신 생성분에 더 이상 나타나지 않음"
   },
   {
     "type": "promote_known_issue",
@@ -849,9 +880,10 @@
     },
     "action_hint": "POST /knowledge/known-issue (members 승격)",
     "id": "S-35",
-    "state": "open",
+    "state": "superseded",
     "created_at": "2026-07-04T09:00:12",
-    "updated_at": "2026-07-31T09:00:05"
+    "updated_at": "2026-08-02T19:09:37",
+    "superseded_reason": "최신 생성분에 더 이상 나타나지 않음"
   },
   {
     "type": "promote_known_issue",
@@ -873,9 +905,10 @@
     },
     "action_hint": "POST /knowledge/known-issue (members 승격)",
     "id": "S-36",
-    "state": "open",
+    "state": "superseded",
     "created_at": "2026-07-04T09:00:12",
-    "updated_at": "2026-08-02T09:00:15"
+    "updated_at": "2026-08-02T19:09:37",
+    "superseded_reason": "최신 생성분에 더 이상 나타나지 않음"
   },
   {
     "type": "promote_known_issue",
@@ -897,9 +930,10 @@
     },
     "action_hint": "POST /knowledge/known-issue (members 승격)",
     "id": "S-37",
-    "state": "open",
+    "state": "superseded",
     "created_at": "2026-07-04T09:00:12",
-    "updated_at": "2026-08-02T09:00:15"
+    "updated_at": "2026-08-02T19:09:37",
+    "superseded_reason": "최신 생성분에 더 이상 나타나지 않음"
   },
   {
     "type": "promote_known_issue",
@@ -920,9 +954,10 @@
     },
     "action_hint": "POST /knowledge/known-issue (members 승격)",
     "id": "S-38",
-    "state": "open",
+    "state": "superseded",
     "created_at": "2026-07-04T09:00:12",
-    "updated_at": "2026-08-02T09:00:15"
+    "updated_at": "2026-08-02T19:09:37",
+    "superseded_reason": "최신 생성분에 더 이상 나타나지 않음"
   },
   {
     "type": "promote_known_issue",
@@ -943,9 +978,10 @@
     },
     "action_hint": "POST /knowledge/known-issue (members 승격)",
     "id": "S-39",
-    "state": "open",
+    "state": "superseded",
     "created_at": "2026-07-04T09:00:12",
-    "updated_at": "2026-08-02T09:00:15"
+    "updated_at": "2026-08-02T19:09:37",
+    "superseded_reason": "최신 생성분에 더 이상 나타나지 않음"
   },
   {
     "type": "promote_known_issue",
@@ -966,15 +1002,16 @@
     },
     "action_hint": "POST /knowledge/known-issue (members 승격)",
     "id": "S-40",
-    "state": "open",
+    "state": "superseded",
     "created_at": "2026-07-04T09:00:12",
-    "updated_at": "2026-08-02T09:00:15"
+    "updated_at": "2026-08-02T19:09:37",
+    "superseded_reason": "최신 생성분에 더 이상 나타나지 않음"
   },
   {
     "type": "promote_known_issue",
-    "priority": "P2",
+    "priority": "P3",
     "target": "LSI-118",
-    "rationale": "유사도 0.878로 묶인 7건 중복 사례 — 정규 기사로 승격 권장",
+    "rationale": "유사도 0.878로 묶인 7건 중복 사례 — 정규 기사로 승격 권장. 검색 정확도는 바뀌지 않고(실측) 매치에 '알려진 고장모드' 주석이 붙어 읽는 사람이 중복임을 알 수 있다.",
     "evidence": {
       "members": [
         "LSI-118",
@@ -995,13 +1032,13 @@
     "id": "S-41",
     "state": "open",
     "created_at": "2026-08-02T09:00:15",
-    "updated_at": "2026-08-02T09:00:15"
+    "updated_at": "2026-08-02T19:09:37"
   },
   {
     "type": "promote_known_issue",
-    "priority": "P2",
+    "priority": "P3",
     "target": "LSI-113",
-    "rationale": "유사도 0.85로 묶인 6건 중복 사례 — 정규 기사로 승격 권장",
+    "rationale": "유사도 0.85로 묶인 6건 중복 사례 — 정규 기사로 승격 권장. 검색 정확도는 바뀌지 않고(실측) 매치에 '알려진 고장모드' 주석이 붙어 읽는 사람이 중복임을 알 수 있다.",
     "evidence": {
       "members": [
         "LSI-113",
@@ -1021,13 +1058,13 @@
     "id": "S-42",
     "state": "open",
     "created_at": "2026-08-02T09:00:15",
-    "updated_at": "2026-08-02T09:00:15"
+    "updated_at": "2026-08-02T19:09:37"
   },
   {
     "type": "promote_known_issue",
-    "priority": "P2",
+    "priority": "P3",
     "target": "LSI-133",
-    "rationale": "유사도 0.9로 묶인 6건 중복 사례 — 정규 기사로 승격 권장",
+    "rationale": "유사도 0.9로 묶인 6건 중복 사례 — 정규 기사로 승격 권장. 검색 정확도는 바뀌지 않고(실측) 매치에 '알려진 고장모드' 주석이 붙어 읽는 사람이 중복임을 알 수 있다.",
     "evidence": {
       "members": [
         "LSI-133",
@@ -1047,13 +1084,13 @@
     "id": "S-43",
     "state": "open",
     "created_at": "2026-08-02T09:00:15",
-    "updated_at": "2026-08-02T09:00:15"
+    "updated_at": "2026-08-02T19:09:37"
   },
   {
     "type": "promote_known_issue",
-    "priority": "P2",
+    "priority": "P3",
     "target": "LSI-101",
-    "rationale": "유사도 0.874로 묶인 5건 중복 사례 — 정규 기사로 승격 권장",
+    "rationale": "유사도 0.874로 묶인 5건 중복 사례 — 정규 기사로 승격 권장. 검색 정확도는 바뀌지 않고(실측) 매치에 '알려진 고장모드' 주석이 붙어 읽는 사람이 중복임을 알 수 있다.",
     "evidence": {
       "members": [
         "LSI-101",
@@ -1072,7 +1109,7 @@
     "id": "S-44",
     "state": "open",
     "created_at": "2026-08-02T09:00:15",
-    "updated_at": "2026-08-02T09:00:15"
+    "updated_at": "2026-08-02T19:09:37"
   },
   {
     "type": "promote_known_issue",
@@ -1095,9 +1132,10 @@
     },
     "action_hint": "POST /knowledge/known-issue (members 승격)",
     "id": "S-45",
-    "state": "open",
+    "state": "superseded",
     "created_at": "2026-08-02T09:00:15",
-    "updated_at": "2026-08-02T09:00:15"
+    "updated_at": "2026-08-02T19:09:37",
+    "superseded_reason": "최신 생성분에 더 이상 나타나지 않음"
   },
   {
     "type": "promote_known_issue",
@@ -1120,9 +1158,10 @@
     },
     "action_hint": "POST /knowledge/known-issue (members 승격)",
     "id": "S-46",
-    "state": "open",
+    "state": "superseded",
     "created_at": "2026-08-02T09:00:15",
-    "updated_at": "2026-08-02T09:00:15"
+    "updated_at": "2026-08-02T19:09:37",
+    "superseded_reason": "최신 생성분에 더 이상 나타나지 않음"
   },
   {
     "type": "promote_known_issue",
@@ -1145,9 +1184,10 @@
     },
     "action_hint": "POST /knowledge/known-issue (members 승격)",
     "id": "S-47",
-    "state": "open",
+    "state": "superseded",
     "created_at": "2026-08-02T09:00:15",
-    "updated_at": "2026-08-02T09:00:15"
+    "updated_at": "2026-08-02T19:09:37",
+    "superseded_reason": "최신 생성분에 더 이상 나타나지 않음"
   },
   {
     "type": "promote_known_issue",
@@ -1169,9 +1209,10 @@
     },
     "action_hint": "POST /knowledge/known-issue (members 승격)",
     "id": "S-48",
-    "state": "open",
+    "state": "superseded",
     "created_at": "2026-08-02T09:00:15",
-    "updated_at": "2026-08-02T09:00:15"
+    "updated_at": "2026-08-02T19:09:37",
+    "superseded_reason": "최신 생성분에 더 이상 나타나지 않음"
   },
   {
     "type": "promote_known_issue",
@@ -1193,9 +1234,10 @@
     },
     "action_hint": "POST /knowledge/known-issue (members 승격)",
     "id": "S-49",
-    "state": "open",
+    "state": "superseded",
     "created_at": "2026-08-02T09:00:15",
-    "updated_at": "2026-08-02T09:00:15"
+    "updated_at": "2026-08-02T19:09:37",
+    "superseded_reason": "최신 생성분에 더 이상 나타나지 않음"
   },
   {
     "type": "promote_known_issue",
@@ -1217,9 +1259,10 @@
     },
     "action_hint": "POST /knowledge/known-issue (members 승격)",
     "id": "S-50",
-    "state": "open",
+    "state": "superseded",
     "created_at": "2026-08-02T09:00:15",
-    "updated_at": "2026-08-02T09:00:15"
+    "updated_at": "2026-08-02T19:09:37",
+    "superseded_reason": "최신 생성분에 더 이상 나타나지 않음"
   },
   {
     "type": "promote_known_issue",
@@ -1241,9 +1284,10 @@
     },
     "action_hint": "POST /knowledge/known-issue (members 승격)",
     "id": "S-51",
-    "state": "open",
+    "state": "superseded",
     "created_at": "2026-08-02T09:00:15",
-    "updated_at": "2026-08-02T09:00:15"
+    "updated_at": "2026-08-02T19:09:37",
+    "superseded_reason": "최신 생성분에 더 이상 나타나지 않음"
   },
   {
     "type": "promote_known_issue",
@@ -1265,9 +1309,10 @@
     },
     "action_hint": "POST /knowledge/known-issue (members 승격)",
     "id": "S-52",
-    "state": "open",
+    "state": "superseded",
     "created_at": "2026-08-02T09:00:15",
-    "updated_at": "2026-08-02T09:00:15"
+    "updated_at": "2026-08-02T19:09:37",
+    "superseded_reason": "최신 생성분에 더 이상 나타나지 않음"
   },
   {
     "type": "promote_known_issue",
@@ -1288,8 +1333,23 @@
     },
     "action_hint": "POST /knowledge/known-issue (members 승격)",
     "id": "S-53",
-    "state": "open",
+    "state": "superseded",
     "created_at": "2026-08-02T09:00:15",
-    "updated_at": "2026-08-02T09:00:15"
+    "updated_at": "2026-08-02T19:09:37",
+    "superseded_reason": "최신 생성분에 더 이상 나타나지 않음"
+  },
+  {
+    "type": "promote_known_issue_bulk",
+    "priority": "P3",
+    "target": "",
+    "rationale": "승격 대상 군집이 21개 더 있다 — 상위 5건만 개별 제안으로 올렸다. 나머지는 대시보드의 '중복 지식' 카드에서 한 번에 본다.",
+    "evidence": {
+      "remaining": 16
+    },
+    "action_hint": "GET /knowledge/clusters",
+    "id": "S-54",
+    "state": "open",
+    "created_at": "2026-08-02T19:09:37",
+    "updated_at": "2026-08-02T19:09:37"
   }
 ]
