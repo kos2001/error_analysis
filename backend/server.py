@@ -1095,11 +1095,13 @@ _RECO_CACHE_MAX = 64
 
 
 def _recommend_cached(query_rec: dict, k: int, exclude_key: Optional[str]) -> dict:
+    _t0 = time.perf_counter()
     st = _reco_state()
     cache: dict = st.setdefault("_reco_cache", {})
     ck = (query_rec.get("key") or "", k, exclude_key or "",
           "" if query_rec.get("key") else llm_cache.issue_fingerprint(query_rec))
     hit = cache.get(ck)
+    was_hit = hit is not None
     if hit is None:
         hit = st["reco"].recommend(query_rec, k=k, exclude_key=exclude_key)
         if len(cache) >= _RECO_CACHE_MAX:
@@ -1107,7 +1109,13 @@ def _recommend_cached(query_rec: dict, k: int, exclude_key: Optional[str]) -> di
         cache[ck] = hit
     # 사본을 준다 — 호출측이 matches 에 주석(known_issue·lifecycle 경고 등)을 덧붙이므로
     # 캐시 원본을 그대로 넘기면 조회할 때마다 주석이 겹쳐 쌓인다.
-    return copy.deepcopy(hit)
+    out = copy.deepcopy(hit)
+    out["_cache_hit"] = was_hit
+    if was_hit:
+        # 캐시본은 생성 당시의 timing 을 물고 있다 — 그대로 기록하면 계측이
+        # 거짓말을 한다(실측 782ms 로 잡혔다). 캐시 히트의 실제 소요로 바꾼다.
+        out["timing"] = {"total_ms": round((time.perf_counter() - _t0) * 1000, 2)}
+    return out
 
 
 def _explain_md_cached(query_rec: dict, match_recs: list[dict]) -> dict | None:
@@ -1261,6 +1269,63 @@ def explain_stream(key: Optional[str] = None, summary: str = "", symptom: str = 
 
 
 # ---------------------------------------------------------------------------
+# 서빙 지연 상설 계측 (D-14)
+#
+# 일회성 벤치로는 회귀를 못 잡는다 — 실제로 이번(2026-08) 격리 벤치가 서버 지연을
+# 2배 이상 잘못 예측했다(백로그 E-0). 최근 요청의 단계별 소요를 링버퍼에 들고
+# /metrics 로 노출한다. 저장소를 두지 않으므로 재기동하면 비워진다 — 장기 추세가
+# 필요하면 이 값을 외부로 긁어 가면 된다.
+# ---------------------------------------------------------------------------
+_METRICS_MAX = 500
+_METRICS: dict[str, list] = {"recommend": [], "explain": []}
+_METRICS_LOCK = threading.Lock()
+
+
+def _record_metric(kind: str, sample: dict) -> None:
+    with _METRICS_LOCK:
+        buf = _METRICS.setdefault(kind, [])
+        buf.append(sample)
+        if len(buf) > _METRICS_MAX:
+            del buf[: len(buf) - _METRICS_MAX]
+
+
+def _pct(values: list[float], q: float) -> float | None:
+    if not values:
+        return None
+    v = sorted(values)
+    return round(v[min(int(len(v) * q), len(v) - 1)], 1)
+
+
+@app.get("/metrics", dependencies=[Depends(require("knowledge.read"))])
+def metrics():
+    """최근 요청의 단계별 지연 분포 — 회귀 감시용.
+
+    cached=true 인 요청은 캐시 히트라 분포를 왜곡한다. 나눠서 보여 준다.
+    """
+    with _METRICS_LOCK:
+        snap = {k: list(v) for k, v in _METRICS.items()}
+    out: dict = {"window": _METRICS_MAX}
+    for kind, rows in snap.items():
+        live = [r for r in rows if not r.get("cached")]
+        cached = [r for r in rows if r.get("cached")]
+        stage_keys = sorted({k for r in live for k in r if k.endswith("_ms")})
+        out[kind] = {
+            "count": len(rows), "cache_hits": len(cached),
+            "cache_hit_rate": round(len(cached) / len(rows), 3) if rows else None,
+            "stages_ms": {
+                k: {"p50": _pct([r[k] for r in live if k in r], 0.5),
+                    "p90": _pct([r[k] for r in live if k in r], 0.9),
+                    "max": _pct([r[k] for r in live if k in r], 1.0),
+                    "n": sum(1 for r in live if k in r)}
+                for k in stage_keys},
+            "cached_total_ms": {"p50": _pct([r["total_ms"] for r in cached if "total_ms" in r], 0.5)}
+                               if cached else None,
+        }
+    out["rerank_failures"] = sum(1 for r in snap.get("recommend", []) if r.get("rerank_failed"))
+    return out
+
+
+# ---------------------------------------------------------------------------
 # 심층 분석 예열(prewarm) — 사용자가 누르기 전에 미리 만들어 둔다.
 #
 # 캐시만 두면 "처음 여는 이슈"는 여전히 수 초를 기다린다. 미해결 이슈는 목록이
@@ -1404,6 +1469,9 @@ def recommend(req: RecommendRequest):
         lifecycle.annotate(result["matches"])
     except Exception:
         pass
+    _record_metric("recommend", {**(result.get("timing") or {}),
+                                 "cached": bool(result.pop("_cache_hit", False))})
+    result.pop("timing", None)          # 내부 신호 — 응답 본문에는 싣지 않는다
     out = {
         "query": {"key": query_rec.get("key"), "summary": query_rec.get("summary"),
                   "symptom": query_rec.get("symptom"), "chip": query_rec.get("chip"),
