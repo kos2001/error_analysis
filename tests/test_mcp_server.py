@@ -162,9 +162,40 @@ async def run() -> None:
     mcp_server.unbind_asgi()
 
 
+def test_mount_path() -> None:
+    """슬래시 없는 /mcp 도 받는가 — 문서가 안내하는 URL 이 실제로 붙어야 한다.
+
+    Mount 는 POST 를 자동 리다이렉트하지 않는다. 클라이언트가 "https://<서버>/mcp" 로
+    설정하면 405 만 보고 이유를 알 수 없었다. 307 이어야 메서드와 본문이 보존된다.
+    """
+    print("\n[마운트 경로]")
+    import server                                    # noqa: E402
+    from fastapi.testclient import TestClient        # noqa: E402
+    body = {"jsonrpc": "2.0", "id": 1, "method": "initialize",
+            "params": {"protocolVersion": "2025-06-18", "capabilities": {},
+                       "clientInfo": {"name": "probe", "version": "0"}}}
+    hdr = {"Content-Type": "application/json",
+           "Accept": "application/json, text/event-stream"}
+    # base_url 을 localhost 로 — MCP 의 Host 검증(DNS rebinding 방어)이 TestClient 기본
+    # 호스트 "testserver" 를 421 로 막는다. 그 방어는 의도된 것이라 우회가 아니라 준수한다.
+    with TestClient(server.app, base_url="http://localhost") as c:
+        r = c.post("/mcp", json=body, headers=hdr, follow_redirects=False)
+        check("슬래시 없는 /mcp 는 307", r.status_code == 307, str(r.status_code))
+        check("메서드 보존용 307 (301/302 아님)", r.status_code not in (301, 302),
+              str(r.status_code))
+        check("/mcp/ 로 보낸다", r.headers.get("location", "").startswith("/mcp/"),
+              r.headers.get("location", ""))
+        for path in ("/mcp", "/mcp/"):
+            rr = c.post(path, json=body, headers=hdr, follow_redirects=True)
+            check(f"POST {path} → 200", rr.status_code == 200, str(rr.status_code))
+            check(f"POST {path} 에 serverInfo", "lsi-error-analysis" in rr.text,
+                  rr.text[:100])
+
+
 if __name__ == "__main__":
     try:
         asyncio.run(run())
+        test_mount_path()
     finally:
         USERS.unlink(missing_ok=True)
     print("\n" + "=" * 56)
