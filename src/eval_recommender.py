@@ -125,6 +125,9 @@ def main() -> int:
                     help="동일 칩/분류 부스트 오버라이드 (기본: Recommender 기본값)")
     ap.add_argument("--rerank", action="store_true",
                     help="2차 cross-encoder 재순위 + rerank 강도 게이트 사용(paraphrase 평가)")
+    ap.add_argument("--wrong-chip", action="store_true",
+                    help="질의의 칩을 일부러 틀리게 넣어 견고성 측정. 신고자가 칩을 "
+                         "잘못 적는 상황 — 정답 템플릿은 그대로여야 한다.")
     ap.add_argument("--both-gates", action="store_true",
                     help="rerank ON/OFF 두 경로를 모두 평가. rerank 를 켜면 rerank 게이트가 "
                          "판정을 대신해 embed_cos 게이트의 결함이 가려진다 — 모델을 바꿀 때는 "
@@ -189,6 +192,27 @@ def main() -> int:
                 ep = evaluate_paraphrase(rec, ds)
                 results[tag][name] = ep
                 print(f"{'':<14}{'':<10}{name:<12}{ep['n_pos']:>4}{ep['P@1']:>7}{ep['P@3']:>7}{ep['MRR']:>7}{ep['gate_pass']:>7}{ep['junk_blocked']:>7}")
+
+            # 교차 칩 — 질의에 틀린 칩을 넣어도 정답을 찾는가.
+            if args.wrong_chip:
+                chips = sorted({r.get("chip", "") for r in resolved if r.get("chip")})
+                wc_sets = dict(extra_sets)
+                if para_ds is not None:
+                    wc_sets = {"paraphrase": para_ds, **wc_sets}
+                for name, ds in wc_sets.items():
+                    hit = 0
+                    pos = ds.get("positives", [])
+                    for it in pos:
+                        own = it.get("chip", "")
+                        wrong = next((c for c in chips if c != own), "")
+                        q = {"summary": it["summary"], "symptom": it.get("symptom", ""),
+                             "chip": wrong, "category": it.get("category", "")}
+                        r = rec.recommend(q, k=3)
+                        hit += bool(r["matches"]) and \
+                            template_key(r["matches"][0]["summary"]) == it["template"]
+                    p1 = round(hit / len(pos), 3) if pos else 0.0
+                    results[tag][f"{name}|wrong_chip"] = {"P@1": p1, "n": len(pos)}
+                    print(f"{'':<14}{'':<10}{name + '·틀린칩':<12}{len(pos):>4}{p1:>7}")
 
             # rerank OFF 경로 — embed_cos 게이트 단독 성능. rerank 를 켠 수치만 보면
             # 폴백 게이트가 못 쓰는 상태여도 전 지표 1.0 으로 보인다(실제로 그랬다).
