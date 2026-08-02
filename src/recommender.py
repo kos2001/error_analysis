@@ -181,7 +181,14 @@ class Recommender:
     # 대가: 정상 경로에서 매치별 embed_cos 표시가 사라진다.
     rerank_fail_limit: int = 3            # 연속 실패 시 rerank 자동 비활성(circuit breaker) —
     # 미지원 게이트웨이에서 질의마다 실패 요청을 반복 지불하지 않기 위함.
+    #
+    # 재시도 대기(초). 예전에는 한 번 열리면 **KB 를 다시 만들 때까지 영영 닫히지
+    # 않았다** — 게이트웨이가 5분 끊긴 것만으로 그날 내내 약한 폴백 게이트로 돌았다.
+    # (그 상태에서 메타 없는 자유 문장은 정답 통과가 1.000 → 0.947 로 떨어진다.)
+    # 대기 후 한 번 더 시도해, 일시 장애면 스스로 복구한다. 0 이면 재시도 없음.
+    rerank_retry_sec: float = 300.0
     _rerank_fails: int = field(default=0, repr=False)
+    _rerank_tripped_at: float = field(default=0.0, repr=False)
     _embedder: object = field(default=None, repr=False)
     _kb_emb: object = field(default=None, repr=False)
 
@@ -198,6 +205,22 @@ class Recommender:
     # 무관 최대 0.500 으로 애초에 **겹쳐서**(분리 불가) 어떤 임계로도 못 쓴다.
     # rerank 를 켜고 평가하면 rerank 게이트가 판정을 대신해 이 결함이 가려지므로,
     # 모델 교체 시에는 반드시 rerank OFF 경로로도 평가한다.
+    # bge-m3 0.57 재검증(2026-08-02, scripts/calibrate_gate_cos.py · 정답 171 / 무관 66,
+    # 교정된 평가셋 4종). **이미 최적이고 움직일 자리가 없다:**
+    #   무관 최대 코사인 0.563 → 0.57 은 무관을 전부 막는 **최저** 임계다.
+    #   0.55 로 내리면 무관 차단 1.000 → 0.955, 올리면 정답이 급격히 깎인다(0.60 에서 0.901).
+    #
+    # 남는 손실은 임계 문제가 아니다. 메타(chip·category) 없이 증상만 적는 자유 문장에서
+    # 정답 통과 0.947 — 막히는 9건은 전부 confusable 셋(기술용어를 뺀 현장 말투 재서술)이고,
+    # 그 코사인 0.498~0.561 이 무관 최대 0.563 과 **겹친다.** 어떤 임계로도 못 가른다.
+    #   경로별: 이슈 선택(메타 있음) 1.000 · 자유 문장 0.947 (confusable 만 0.735)
+    #
+    # BM25 를 3번째 신호로 넣어 구제하는 안은 재보고 **버렸다** — 무관 최대 6.76 vs
+    # 구제 대상 7.67 로 여유가 13% 뿐이다. BM25 원점수는 정규화가 없어 KB 가 커지면
+    # IDF 와 함께 흔들리므로 고정 임계가 조용히 무너진다. z-점수 정규화는 더 나빴다
+    # (여유 -71%: 무관 질의도 코퍼스가 평평하면 z 가 높다). 무엇보다 이건 **폴백** 게이트라
+    # 두 실패의 값이 다르다 — 막으면 "사례 없음"(안전), 통과시키면 무관 사례에 근거한
+    # 환각 근본원인(위험). 얇은 여유로 위험한 쪽을 늘릴 이유가 없다.
     _GATE_COS_BY_MODEL = {
         "baai/bge-m3": 0.57,
         "intfloat/multilingual-e5-large": 0.853,
@@ -488,6 +511,15 @@ class Recommender:
         qtext = _query_text(query_rec)
         # ---- 2차 재순위(reranker): 1차 top-N을 cross-encoder로 재채점 ----
         rr_scores: dict[int, float] = {}
+        # 차단기 재시도 — 대기가 지났으면 한 번 더 열어 본다. 다시 실패하면 아래
+        # 카운터가 즉시 임계를 넘겨(누적값을 유지한다) 곧바로 다시 닫힌다.
+        if (not self.rerank and self._rerank_tripped_at and self.rerank_retry_sec > 0
+                and _t.time() - self._rerank_tripped_at >= self.rerank_retry_sec):
+            self.rerank = True
+            self._rerank_fails = self.rerank_fail_limit - 1
+            self._rerank_tripped_at = 0.0
+            print("[recommender] rerank 재시도 — 대기 경과")
+
         if self.rerank and ranked_all:
             from reranker import rerank as _rerank  # 지연 임포트(선택 의존)
             cand = [i for i, _ in ranked_all[:self.rerank_top_n]]
@@ -509,8 +541,11 @@ class Recommender:
                 self._rerank_fails += 1
                 if self._rerank_fails >= self.rerank_fail_limit:
                     self.rerank = False
-                    print(f"[recommender] rerank {self._rerank_fails}회 연속 실패 → "
-                          f"비활성(1차 순위+embed_cos 게이트로 폴백): {str(e)[:120]}")
+                    self._rerank_tripped_at = _t.time()
+                    print(f"[recommender] ⚠ rerank {self._rerank_fails}회 연속 실패 → "
+                          f"비활성(1차 순위+embed_cos 폴백 게이트): {str(e)[:120]}\n"
+                          f"[recommender] ⚠ 폴백 게이트는 메타 없는 자유 문장에서 정답의 "
+                          f"약 5%를 막는다(실측). {self.rerank_retry_sec:.0f}초 뒤 재시도.")
         ranked = ranked_all[:k]
         q_ents = query_entities(query_rec)
         # 강도 신호 — RRF(순위 기반) 점수와 별개. 게이트/신뢰도 표시는 이것만 사용한다.
