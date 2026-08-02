@@ -133,6 +133,12 @@ class Recommender:
     # 음성 샘플이며 이 압축은 정직한 값이다. 모델·평가셋 변경 시 재보정할 것.
     rerank_timeout: int = 10              # /rerank 호출 타임아웃(초). 실측 호출당 ≈0.6s —
     # 게이트웨이가 /rerank 미지원일 때 질의가 기본 60s에 묶이지 않게 짧게 제한.
+    lazy_embed: bool = False              # 정상 경로에서 질의 임베딩을 생략(E-1).
+    # rerank 가 상위 후보를 다시 채점하므로 1차 랭커의 역할은 recall 뿐이다. 임베딩을
+    # 빼고 rerank_top_n 을 늘리면 정답 회수는 유지되면서 API 왕복 1회가 사라진다
+    # (실측 recall@30: bm25+graph 1.000). rerank 가 실패한 회차에만 embed_cos 를
+    # 계산해 폴백 게이트를 세운다 — 안전장치는 지키고 비용만 없애는 것이다.
+    # 대가: 정상 경로에서 매치별 embed_cos 표시가 사라진다.
     rerank_fail_limit: int = 3            # 연속 실패 시 rerank 자동 비활성(circuit breaker) —
     # 미지원 게이트웨이에서 질의마다 실패 요청을 반복 지불하지 않기 위함.
     _rerank_fails: int = field(default=0, repr=False)
@@ -330,9 +336,14 @@ class Recommender:
             fused = dict(self._bm25_rank(qtext))
             self._apply_boost(fused, query_rec)
         elif self.method == "hybrid_embed":
-            # bm25 우세 + embed 보조 + graph 약하게, 동일 칩/분류 부스트
-            lists = [self._bm25_rank(qtext), self._embed_rank(qtext), self._graph_rank(qents)]
-            fused = self._rrf(lists, self.rrf_k, weights=[2.0, 1.5, 0.5])
+            if self.lazy_embed and self.rerank:
+                # 1차는 recall 만 책임진다 — rerank 가 어차피 재채점한다.
+                lists = [self._bm25_rank(qtext), self._graph_rank(qents)]
+                fused = self._rrf(lists, self.rrf_k, weights=[2.0, 0.5])
+            else:
+                # bm25 우세 + embed 보조 + graph 약하게, 동일 칩/분류 부스트
+                lists = [self._bm25_rank(qtext), self._embed_rank(qtext), self._graph_rank(qents)]
+                fused = self._rrf(lists, self.rrf_k, weights=[2.0, 1.5, 0.5])
             self._apply_boost(fused, query_rec)
         else:  # hybrid (bm25 우세 + graph 약하게 + 부스트)
             lists = [self._bm25_rank(qtext), self._graph_rank(qents)]
@@ -388,10 +399,13 @@ class Recommender:
         # 강도 신호 — RRF(순위 기반) 점수와 별개. 게이트/신뢰도 표시는 이것만 사용한다.
         cos = bm25_raw = None
         _t2 = _t.perf_counter()
+        # 게으른 모드: rerank 가 점수를 냈으면 게이트는 rerank 가 맡으므로 임베딩이
+        # 필요 없다. rerank 가 실패한 회차에만 계산해 embed_cos 폴백 게이트를 세운다.
+        _skip_embed = self.lazy_embed and bool(rr_scores)
         # 조건은 _kb_emb(임베딩 보유 여부) — _embedder는 fastembed 전용 객체라
         # openrouter 백엔드에서 항상 None이었고, 그 탓에 신호·embed_cos 게이트가
         # 통째로 생략돼 coverage가 무조건 True였다(무관 차단율 0.0, 2026-08-01 실측).
-        if self.signals and self._kb_emb is not None:
+        if self.signals and self._kb_emb is not None and not _skip_embed:
             cos = self._cos_all(qtext)
             bm25_raw = self._bm25.get_scores(tokenize(qtext))
         timing["signals_ms"] = round((_t.perf_counter() - _t2) * 1000, 1)
