@@ -92,8 +92,10 @@ def analyse(md: str, evidence_keys: list[str], self_key: str = "") -> dict:
         "concrete_hits": len(CONCRETE_RE.findall(md)),
         # 근거/배경/추정 구분 — 사례에 없는 내용을 (배경)/(추정)으로 표시하는가.
         # 표시가 없으면 엔지니어가 검증된 사례와 일반 지식을 구분할 수 없다.
-        "labeled_background": md.count("(배경)"),
-        "labeled_estimate": md.count("(추정)"),
+        # 모델이 "(배경)" 과 "(배경: ...)" 를 섞어 쓰므로 접두만 센다 — 정확 일치로
+        # 세면 실제로 지켜지는 규약을 0 으로 오보한다(실측).
+        "labeled_background": len(re.findall(r"\(배경[):]", md)),
+        "labeled_estimate": len(re.findall(r"\(추정[):]", md)),
         "han_chars": find_violations(md),
     }
 

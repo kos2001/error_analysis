@@ -26,6 +26,8 @@ const STATE_LABEL: Record<string, string> = {
 
 export default function VocPage({ onBack }: { onBack: () => void }) {
   const [items, setItems] = useState<Voc[]>([]);
+  // 실패를 삼키면 items=[] 라 "의견 없음" 처럼 보인다 — 구분되게 남긴다.
+  const [loadErr, setLoadErr] = useState("");
   const [stats, setStats] = useState<any>(null);
   const [category, setCategory] = useState("improvement");
   const [message, setMessage] = useState("");
@@ -34,7 +36,8 @@ export default function VocPage({ onBack }: { onBack: () => void }) {
   const [msg, setMsg] = useState<{ ok: boolean; text: string } | null>(null);
 
   const load = () => fetch(`${API}/voc`).then((r) => r.json())
-    .then((d) => { setItems(d.items ?? []); setStats(d.stats ?? null); }).catch(() => {});
+    .then((d) => { setItems(d.items ?? []); setStats(d.stats ?? null); setLoadErr(""); })
+    .catch((e) => setLoadErr(e?.message || "불러오기 실패"));
   useEffect(() => { load(); }, []);
 
   const submit = async () => {
@@ -104,6 +107,11 @@ export default function VocPage({ onBack }: { onBack: () => void }) {
 
         {/* 목록 */}
         <div className="space-y-3">
+          {loadErr && (
+            <div className="mb-3 rounded-lg border border-red-900/60 bg-red-950/40 px-3 py-2 text-xs text-red-400">
+              의견 목록을 불러오지 못했습니다 — {loadErr}
+            </div>
+          )}
           {items.length === 0 ? (
             <div className="text-center text-zinc-400 py-12 text-sm">아직 접수된 의견이 없습니다. 첫 의견을 남겨주세요.</div>
           ) : items.map((it) => (

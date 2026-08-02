@@ -161,9 +161,16 @@ export default function FailureAnalysis({ onQueueChange, routeKey, onSelectKey, 
     window.addEventListener("pointerup", onUp);
   };
 
+  // 목록 로드 실패를 삼키면 issues=[] 가 되어 "미해결 이슈 0건" 으로 보인다 —
+  // 서버가 죽었는지 정말 0건인지 구분할 수 없다. 사용자는 아무것도 할 수 없는데
+  // 화면은 정상처럼 보이는 것이 가장 나쁘다.
+  const [listErr, setListErr] = useState("");
   useEffect(() => {
     fetch(`${API}/reco/stats`).then((r) => r.json()).then(setStats).catch(() => {});
-    fetch(`${API}/issues/unresolved`).then((r) => r.json()).then((d) => setIssues(d.issues ?? [])).catch(() => {});
+    fetch(`${API}/issues/unresolved`)
+      .then((r) => (r.ok ? r.json() : Promise.reject(new Error(`HTTP ${r.status}`))))
+      .then((d) => { setIssues(d.issues ?? []); setListErr(""); })
+      .catch((e) => setListErr(e.message || "불러오기 실패"));
   }, []);
 
   // 선택 이슈가 바뀌면 관계 그래프 로드 (우측 사이드바).
@@ -500,7 +507,14 @@ export default function FailureAnalysis({ onQueueChange, routeKey, onSelectKey, 
           )}
         </div>
         <div className="flex-1 overflow-y-auto">
-          {filtered.length === 0 && (
+          {listErr && (
+            <div className="m-3 rounded-lg border border-red-900/60 bg-red-950/40 px-3 py-2 text-xs text-red-400">
+              이슈 목록을 불러오지 못했습니다 — {listErr}
+              <button onClick={() => window.location.reload()}
+                className="ml-2 underline hover:text-red-300">새로고침</button>
+            </div>
+          )}
+          {!listErr && filtered.length === 0 && (
             <div className="p-6 text-center text-xs text-zinc-400">
               조건에 맞는 이슈가 없습니다.
               {filterOn && (
