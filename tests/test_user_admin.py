@@ -21,6 +21,9 @@ USERS = ROOT / "tests" / "_users_admin_test.yaml"
 os.environ.update({
     "RVP_JIRA_POLL_SEC": "0", "RVP_PREWARM": "0", "RVP_AUTH_DEV_LOGIN": "1",
     "RVP_SESSION_SECRET": "test-secret", "RVP_USERS_FILE": str(USERS),
+    # MCP 미마운트 — 세션 매니저는 인스턴스당 1회만 run() 할 수 있는데 이 테스트는
+    # TestClient 를 여러 번 만든다. MCP 자체는 tests/test_mcp_server.py 가 본다.
+    "RVP_MCP": "0",
 })
 os.environ.pop("RVP_ADMIN_EMAILS", None)
 
