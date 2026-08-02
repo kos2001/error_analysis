@@ -187,6 +187,23 @@ _GUARDED = ("P@1", "P@3", "MRR")
 _GUARDED_PARA = ("P@1", "P@3", "MRR", "gate_pass", "junk_blocked")
 
 
+def embed_kwargs() -> dict:
+    """서버(`backend/server.py` `_reco_state`)와 **동일한** 임베딩 백엔드·모델 인자.
+
+    오프라인에서 만드는 추천기는 사용자가 실제로 검색하는 것과 같은 유사도 공간이어야
+    한다. 넘기지 않으면 Recommender 가 로컬 MiniLM 기본값으로 떨어지는데, 운영은
+    bge-m3(API)다. 그 상태에서 군집·모순·파라미터 평가를 돌리면 **없는 문제를 만들고
+    있는 문제를 놓친다** — 실제로 대시보드가 "모순 없음", 개선 큐가 "모순 1건" 을
+    동시에 보여줬다. 서버 쪽 로직을 바꾸면 여기도 같이 바꿔야 한다.
+    """
+    import os as _os
+    return {"embed_backend": _os.getenv("RVP_EMBED_BACKEND", "fastembed"),
+            "embed_model": (_os.getenv("RVP_EMBED_MODEL", "")
+                            or ("baai/bge-m3"
+                                if _os.getenv("RVP_EMBED_BACKEND", "") == "openrouter"
+                                else ""))}
+
+
 def _resolved_kb():
     import preprocess
     raw = json.loads((ROOT / "data" / "all_raw_issues.json").read_text(encoding="utf-8"))
@@ -202,7 +219,9 @@ def _eval_with(resolved, overrides: dict) -> dict:
     import eval_recommender as ev
     from recommender import Recommender
     import os as _os
-    kw = {"method": _os.getenv("RVP_RECO_METHOD", "hybrid_embed"), "rerank": False}
+    # 임베딩은 서버와 같은 것 — 다른 공간에서 튜닝한 임계값은 운영에서 의미가 없다.
+    kw = {"method": _os.getenv("RVP_RECO_METHOD", "hybrid_embed"), "rerank": False,
+          **embed_kwargs()}
     kw.update(overrides)
     rec = Recommender(resolved, **kw)
     kb_keys = {r["key"] for r in resolved}
@@ -375,13 +394,21 @@ def suggest(reco=None, records: list[dict] | None = None) -> list[dict]:
 
 
 def _build_recommender(resolved):
-    """cron/오프라인용 추천기 — 서버 없이 군집화(suggest)에 쓸 임베딩 보유. 리랭커 off(비용 0)."""
+    """cron/오프라인용 추천기 — 서버 없이 군집화(suggest)에 쓸 임베딩 보유. 리랭커 off(비용 0).
+
+    **임베딩 백엔드·모델은 서버와 같아야 한다.** 예전에는 이 인자를 넘기지 않아 오프라인
+    루프가 로컬 MiniLM 으로, 서버는 bge-m3(API)로 KB 를 봤다. 유사도 공간이 달라지니
+    같은 임계값(0.85/0.60)에 같은 detect() 를 써도 결론이 갈렸다 — 대시보드는
+    "모순 없음", 개선 큐는 "모순 1건(LSI-210|LSI-211)" 을 동시에 보여줬다.
+    군집·모순·온톨로지 제안 전부가 **사용자가 실제로 검색하는 공간이 아닌 곳**에서
+    계산되고 있었다. 리랭커만 끈다(비용) — 이건 순위 재배열이라 유사도 공간을 안 바꾼다.
+    """
     import os as _os
     from recommender import Recommender
     kw = {kw_: float(_os.environ[env]) for kw_, env in
           (("gate_cos", "RVP_GATE_COS"), ("boost", "RVP_BOOST")) if _os.getenv(env)}
     return Recommender(resolved, method=_os.getenv("RVP_RECO_METHOD", "hybrid_embed"),
-                       rerank=False, **kw)
+                       rerank=False, **embed_kwargs(), **kw)
 
 
 def run_full(save: bool = True) -> dict:
