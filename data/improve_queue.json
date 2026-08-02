@@ -206,9 +206,10 @@
     },
     "action_hint": "POST /knowledge/known-issue (members 승격)",
     "id": "S-8",
-    "state": "open",
+    "state": "superseded",
     "created_at": "2026-06-17T09:00:15",
-    "updated_at": "2026-08-02T19:09:37"
+    "updated_at": "2026-08-02T19:30:13",
+    "superseded_reason": "최신 생성분에 더 이상 나타나지 않음"
   },
   {
     "type": "promote_known_issue",
@@ -545,9 +546,10 @@
     },
     "action_hint": "두 사례 비교 후 disputed/대체 결정(POST /knowledge/lifecycle)",
     "id": "S-22",
-    "state": "open",
+    "state": "superseded",
     "created_at": "2026-06-17T09:00:15",
-    "updated_at": "2026-08-02T19:09:37"
+    "updated_at": "2026-08-02T19:30:13",
+    "superseded_reason": "최신 생성분에 더 이상 나타나지 않음"
   },
   {
     "type": "normalize_ontology",
@@ -570,7 +572,7 @@
     "id": "S-23",
     "state": "open",
     "created_at": "2026-06-17T09:00:15",
-    "updated_at": "2026-08-02T19:09:37"
+    "updated_at": "2026-08-02T19:30:13"
   },
   {
     "type": "promote_known_issue",
@@ -1011,19 +1013,19 @@
     "type": "promote_known_issue",
     "priority": "P3",
     "target": "LSI-118",
-    "rationale": "유사도 0.878로 묶인 7건 중복 사례 — 정규 기사로 승격 권장. 검색 정확도는 바뀌지 않고(실측) 매치에 '알려진 고장모드' 주석이 붙어 읽는 사람이 중복임을 알 수 있다.",
+    "rationale": "유사도 0.968로 묶인 7건 중복 사례 — 정규 기사로 승격 권장. 검색 정확도는 바뀌지 않고(실측) 매치에 '알려진 고장모드' 주석이 붙어 읽는 사람이 중복임을 알 수 있다.",
     "evidence": {
       "members": [
         "LSI-118",
         "LSI-76",
-        "LSI-13",
         "LSI-139",
         "LSI-202",
+        "LSI-13",
         "LSI-55",
         "LSI-97"
       ],
       "size": 7,
-      "avg_similarity": 0.878,
+      "avg_similarity": 0.968,
       "chips": [
         "MDM-5400"
       ]
@@ -1032,13 +1034,13 @@
     "id": "S-41",
     "state": "open",
     "created_at": "2026-08-02T09:00:15",
-    "updated_at": "2026-08-02T19:09:37"
+    "updated_at": "2026-08-02T19:30:13"
   },
   {
     "type": "promote_known_issue",
     "priority": "P3",
     "target": "LSI-113",
-    "rationale": "유사도 0.85로 묶인 6건 중복 사례 — 정규 기사로 승격 권장. 검색 정확도는 바뀌지 않고(실측) 매치에 '알려진 고장모드' 주석이 붙어 읽는 사람이 중복임을 알 수 있다.",
+    "rationale": "유사도 0.955로 묶인 6건 중복 사례 — 정규 기사로 승격 권장. 검색 정확도는 바뀌지 않고(실측) 매치에 '알려진 고장모드' 주석이 붙어 읽는 사람이 중복임을 알 수 있다.",
     "evidence": {
       "members": [
         "LSI-113",
@@ -1049,7 +1051,7 @@
         "LSI-29"
       ],
       "size": 6,
-      "avg_similarity": 0.85,
+      "avg_similarity": 0.955,
       "chips": [
         "PM9C3-NVMe"
       ]
@@ -1058,13 +1060,13 @@
     "id": "S-42",
     "state": "open",
     "created_at": "2026-08-02T09:00:15",
-    "updated_at": "2026-08-02T19:09:37"
+    "updated_at": "2026-08-02T19:30:13"
   },
   {
     "type": "promote_known_issue",
     "priority": "P3",
     "target": "LSI-133",
-    "rationale": "유사도 0.9로 묶인 6건 중복 사례 — 정규 기사로 승격 권장. 검색 정확도는 바뀌지 않고(실측) 매치에 '알려진 고장모드' 주석이 붙어 읽는 사람이 중복임을 알 수 있다.",
+    "rationale": "유사도 0.964로 묶인 6건 중복 사례 — 정규 기사로 승격 권장. 검색 정확도는 바뀌지 않고(실측) 매치에 '알려진 고장모드' 주석이 붙어 읽는 사람이 중복임을 알 수 있다.",
     "evidence": {
       "members": [
         "LSI-133",
@@ -1075,7 +1077,7 @@
         "LSI-175"
       ],
       "size": 6,
-      "avg_similarity": 0.9,
+      "avg_similarity": 0.964,
       "chips": [
         "PM9C3-NVMe"
       ]
@@ -1084,7 +1086,7 @@
     "id": "S-43",
     "state": "open",
     "created_at": "2026-08-02T09:00:15",
-    "updated_at": "2026-08-02T19:09:37"
+    "updated_at": "2026-08-02T19:30:13"
   },
   {
     "type": "promote_known_issue",
@@ -1107,9 +1109,10 @@
     },
     "action_hint": "POST /knowledge/known-issue (members 승격)",
     "id": "S-44",
-    "state": "open",
+    "state": "superseded",
     "created_at": "2026-08-02T09:00:15",
-    "updated_at": "2026-08-02T19:09:37"
+    "updated_at": "2026-08-02T19:30:13",
+    "superseded_reason": "최신 생성분에 더 이상 나타나지 않음"
   },
   {
     "type": "promote_known_issue",
@@ -1342,14 +1345,40 @@
     "type": "promote_known_issue_bulk",
     "priority": "P3",
     "target": "",
-    "rationale": "승격 대상 군집이 21개 더 있다 — 상위 5건만 개별 제안으로 올렸다. 나머지는 대시보드의 '중복 지식' 카드에서 한 번에 본다.",
+    "rationale": "승격 대상 군집이 30개 더 있다 — 상위 5건만 개별 제안으로 올렸다. 나머지는 대시보드의 '중복 지식' 카드에서 한 번에 본다.",
     "evidence": {
-      "remaining": 16
+      "remaining": 25
     },
     "action_hint": "GET /knowledge/clusters",
     "id": "S-54",
     "state": "open",
     "created_at": "2026-08-02T19:09:37",
-    "updated_at": "2026-08-02T19:09:37"
+    "updated_at": "2026-08-02T19:30:13"
+  },
+  {
+    "type": "promote_known_issue",
+    "priority": "P3",
+    "target": "LSI-110",
+    "rationale": "유사도 0.942로 묶인 6건 중복 사례 — 정규 기사로 승격 권장. 검색 정확도는 바뀌지 않고(실측) 매치에 '알려진 고장모드' 주석이 붙어 읽는 사람이 중복임을 알 수 있다.",
+    "evidence": {
+      "members": [
+        "LSI-110",
+        "LSI-68",
+        "LSI-131",
+        "LSI-47",
+        "LSI-173",
+        "LSI-89"
+      ],
+      "size": 6,
+      "avg_similarity": 0.942,
+      "chips": [
+        "SE-Secure7"
+      ]
+    },
+    "action_hint": "POST /knowledge/known-issue (members 승격)",
+    "id": "S-55",
+    "state": "open",
+    "created_at": "2026-08-02T19:30:13",
+    "updated_at": "2026-08-02T19:30:13"
   }
 ]
