@@ -51,46 +51,6 @@ KEY_PATTERNS = [
     r"\bGen[1-5]\b",
 ]
 
-# ---------------------------------------------------------------------------
-# 입력 정규화 — 검색 앞단의 단일 소스
-# ---------------------------------------------------------------------------
-# **왜 필요한가(실측 2026-08-02).** 토크나이저의 한글 클래스 `[가-힣]` 는 완성형만
-# 잡는다. 같은 "펌웨어" 라도 분해형(NFD)으로 들어오면 한 글자도 매치되지 않아
-# **한글 토큰이 통째로 0개**가 된다. BM25 는 융합에서 가중치가 가장 큰(2.0) 랭커라
-# 결과가 무너진다:
-#
-#     confusable 34건, 질의만 NFD 로 바꿨을 때
-#       P@1        1.000 → 0.294
-#       게이트 통과  1.000 → 0.882   ← 막지도 않는다. 틀린 답을 자신 있게 내놓는다.
-#
-# NFD 는 특이한 입력이 아니다 — macOS 파일명·일부 클립보드·일부 Jira 내보내기가
-# 그렇다. KB 는 지금 깨끗하지만(검사: NFD 0자) **질의는 사람이 쓴다.**
-#
-# 대시류는 유니코드 정규화로 바뀌지 않는 별개 문자다(현 KB 에 em-dash 230자).
-# 지금은 문장 부호로만 쓰여 토큰을 깨지 않지만, Word·Jira 가 "PM9C3-NVMe" 의
-# 하이픈을 자동으로 ‑(U+2011)로 바꾸면 칩 코드 엔티티가 사라진다 — 그래서 함께 접는다.
-_ZERO_WIDTH = dict.fromkeys(map(ord, "\u200b\u200c\u200d\u2060\ufeff"))
-_DASHES = str.maketrans({c: "-" for c in "\u2010\u2011\u2012\u2013\u2014\u2015\u2212"})
-
-
-def normalize_text(s: str) -> str:
-    """검색에 쓰기 전 텍스트를 한 가지 표기로 접는다. KB·질의 **양쪽에** 적용한다.
-
-    한쪽만 정규화하면 오히려 어긋난다 — 그래서 tokenize/extract_entities/문서·질의
-    표현이 모두 이 함수를 지난다.
-
-    NFKC 를 쓰는 이유: 분해형→완성형(NFD→NFC)과 전각→반각을 한 번에 처리한다.
-    (전각 'ＰＭ９Ｃ３' 은 칩 코드 정규식에 걸리지 않아 엔티티가 0개가 됐다.)
-    """
-    if not s:
-        return s
-    import unicodedata
-    s = unicodedata.normalize("NFKC", s)
-    s = s.translate(_ZERO_WIDTH).translate(_DASHES)
-    # 비분리 공백 등 → 일반 공백. NFKC 가 U+00A0 는 접지 않는다.
-    return " ".join(s.split())
-
-
 # 숫자-인지 토크나이저(BM25용): 숫자/버전/등급/단위 복합 토큰을 보존하고 한글 조사를 분리.
 #   - 0x1f40 (16진), 85°c / 0.01% (값+단위), gdc7.4.2.684 (FW 버전), hs-g4 (등급)을 통째로.
 #   - "gen1로"→["gen1","로"], "684에서"→["684","에서"] (라틴/숫자와 한글 경계 분리).
@@ -100,11 +60,10 @@ NOISE_LABELS = {"customer-report"}
 
 
 def tokenize(s: str) -> list[str]:
-    return _TOKEN_RE.findall(normalize_text(s).lower())
+    return _TOKEN_RE.findall(s.lower())
 
 
 def extract_entities(text: str) -> set[str]:
-    text = normalize_text(text)
     ents: set[str] = set()
     for pat in KEY_PATTERNS:
         for m in re.finditer(pat, text, flags=re.IGNORECASE):
