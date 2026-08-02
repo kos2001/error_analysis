@@ -253,6 +253,10 @@ def evaluate_param(param: str, value: float) -> dict:
 # --------------------------------------------------------------------------- #
 # L3 — 신호에서 '지식 변경' 제안 도출(사람 검토 큐). loop는 실행하지 않는다.
 # --------------------------------------------------------------------------- #
+# 승격 제안 개수 상한 — 큐가 한 유형으로 덮이면 다른 유형이 묻힌다.
+PROMOTE_SUGGEST_MAX = 5
+
+
 def suggest(reco=None, records: list[dict] | None = None) -> list[dict]:
     """측정 신호 → actionable 지식 변경 제안 목록. 실행은 사람이 HITL 엔드포인트로.
 
@@ -261,19 +265,43 @@ def suggest(reco=None, records: list[dict] | None = None) -> list[dict]:
     out = []
 
     # 1) 미승격 고장모드 군집 → Known-Issue 기사 승격 제안(중복 사례 정리)
+    #
+    # **개수를 제한한다.** 예전에는 군집마다 한 건씩 뽑아 큐가 같은 유형으로 51건까지
+    # 쌓였다(전체 53건 중). 사람이 처리하는 목록인데 한 종류가 화면을 덮으면 다른
+    # 유형(모순·온톨로지)이 묻히고, 결국 아무도 큐를 보지 않게 된다.
+    #
+    # 효과 실측(2026-08-02): 승격 3건을 실행해도 **검색 품질은 그대로**였고
+    # (P@1 1.000 → 1.000, 게이트 1.000 유지), 바뀐 것은 매치에 붙는 known_issue
+    # 주석이었다(1/48 → 9/48). 즉 이 제안의 값어치는 **검색 개선이 아니라 지식
+    # 정리**다 — rationale 에 그대로 적어 우선순위를 오해하지 않게 한다.
     if reco is not None:
         try:
             import failure_modes
-            for c in failure_modes.cluster_from_recommender(reco, threshold=0.80, min_size=3):
-                if c.get("promoted") or c.get("avg_similarity", 0) < 0.80:
-                    continue
+            clusters = [c for c in failure_modes.cluster_from_recommender(reco, threshold=0.80, min_size=3)
+                        if not c.get("promoted") and c.get("avg_similarity", 0) >= 0.80]
+            # 큰 군집부터 — 같은 노력으로 더 많은 사례가 정리된다.
+            clusters.sort(key=lambda c: (-c.get("size", 0), -c.get("avg_similarity", 0)))
+            for c in clusters[:PROMOTE_SUGGEST_MAX]:
                 out.append({
-                    "type": "promote_known_issue", "priority": "P2",
+                    "type": "promote_known_issue", "priority": "P3",
                     "target": c["representative"],
-                    "rationale": f"유사도 {c['avg_similarity']}로 묶인 {c['size']}건 중복 사례 — 정규 기사로 승격 권장",
+                    "rationale": (f"유사도 {c['avg_similarity']}로 묶인 {c['size']}건 중복 사례 — "
+                                  f"정규 기사로 승격 권장. 검색 정확도는 바뀌지 않고(실측) "
+                                  f"매치에 '알려진 고장모드' 주석이 붙어 읽는 사람이 "
+                                  f"중복임을 알 수 있다."),
                     "evidence": {"members": c["members"], "size": c["size"],
                                  "avg_similarity": c["avg_similarity"], "chips": c.get("chips", [])},
                     "action_hint": "POST /knowledge/known-issue (members 승격)",
+                })
+            if len(clusters) > PROMOTE_SUGGEST_MAX:
+                out.append({
+                    "type": "promote_known_issue_bulk", "priority": "P3",
+                    "target": "",
+                    "rationale": (f"승격 대상 군집이 {len(clusters)}개 더 있다 — 상위 "
+                                  f"{PROMOTE_SUGGEST_MAX}건만 개별 제안으로 올렸다. "
+                                  f"나머지는 대시보드의 '중복 지식' 카드에서 한 번에 본다."),
+                    "evidence": {"remaining": len(clusters) - PROMOTE_SUGGEST_MAX},
+                    "action_hint": "GET /knowledge/clusters",
                 })
         except Exception:
             pass
