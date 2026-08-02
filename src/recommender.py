@@ -582,11 +582,12 @@ class Recommender:
                 m["rerank_score"] = round(rr_scores[i], 4)
             matches.append(m)
         # coverage 게이트: 무관 질의 차단.
-        coverage = bool(matches)
+        # 기본값을 False 로 둔다 — 판정하지 못했으면 통과가 아니라 차단이다(fail closed).
+        coverage = False
         gate = None
         if self.rerank and rr_scores:
             # rerank 게이트는 rerank가 실제 점수를 냈을 때만. /rerank 실패(rr_scores 빈
-            # dict)면 아래 embed_cos 게이트, 그것도 없으면 기본(매치 있으면 통과)로 폴백.
+            # dict)면 아래 embed_cos 게이트, 둘 다 없으면 마지막 else 에서 차단한다.
             # 강도 기반 게이트 — rerank relevance_score(재보정 임계 rerank_gate).
             top_rr = max(rr_scores.values(), default=0.0)
             coverage = bool(matches) and top_rr >= self.rerank_gate
@@ -603,6 +604,23 @@ class Recommender:
             gate = {"signal": "embed_cos", "max_cos": round(max_cos, 3),
                     "top_entity_overlap": top_overlap,
                     "cos_threshold": self.gate_cos, "passed": coverage}
+        else:
+            # **판정 신호가 하나도 없다** — 재순위도 임베딩도 못 쓴다.
+            # 예전에는 이 경우 gate=None 이고 coverage 가 `bool(matches)` 로 남아
+            # **무조건 True** 였다. BM25 는 무관 질의에도 항상 무언가를 돌려주므로,
+            # 구내식당 결제 문의에 칩 고장 사례가 붙고 그 위에 LLM 근본원인이
+            # 생성된다 — 게이트가 막으려던 바로 그 환각이다.
+            #
+            # 임베딩과 재순위는 둘 다 외부 API 다. 게이트웨이 장애면 **동시에** 죽으니
+            # 드문 조합이 아니라 오히려 흔한 조합이다.
+            #
+            # 그래서 **닫힌 채로 실패한다**(fail closed). 다만 "사례 없음" 과는 구분한다 —
+            # 사례가 없는 게 아니라 판정을 못 하는 것이고, 사용자에게 할 말이 다르다.
+            coverage = False
+            gate = {"signal": "none", "available": False, "passed": False,
+                    "reason": "판정 신호 없음(재순위·임베딩 모두 사용 불가) — "
+                              "근거 없는 분석을 막기 위해 차단했습니다",
+                    "candidates": len(matches)}
         # 제안: 상위 매치들의 다수결 클래스 → 그 클래스 대표의 해결책 (게이트 통과 시에만)
         proposal = None
         if matches and coverage:
