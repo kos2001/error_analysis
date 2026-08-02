@@ -1209,8 +1209,24 @@ def _generate_explain_md(query_rec: dict, match_recs: list[dict]):
         yield delta
     full = "".join(acc)
     if full.strip():
-        cited = sorted({m for m in re.findall(r"LSI-\d+", full)} & valid)
-        _explain_md_store(query_rec, match_recs, {"markdown": full, "citations": cited})
+        mentioned = {m for m in re.findall(r"LSI-\d+", full)}
+        # 허용 집합: 근거 키 + 접미사를 뗀 형태(LSI-7-rca → LSI-7) + 질의 이슈 자신.
+        # 본문은 자연스럽게 "LSI-7" 로 쓰는데 근거 키는 "LSI-7-rca" 라, 이걸 구분하지
+        # 않으면 정상 인용이 환각으로 잡힌다(측정에서 확인).
+        allowed = set(valid)
+        for k in list(valid) + [query_rec.get("key", "")]:
+            if not k:
+                continue
+            allowed.add(k)
+            m = re.match(r"(LSI-\d+)", str(k))
+            if m:
+                allowed.add(m.group(1))
+        cited = sorted(mentioned & allowed)
+        dropped = sorted(mentioned - allowed)   # 제공되지 않은 사례를 본문이 언급
+        if dropped:
+            print(f"[explain] {query_rec.get('key','?')} 본문이 미제공 사례를 언급: {dropped}")
+        _explain_md_store(query_rec, match_recs,
+                          {"markdown": full, "citations": cited, "dropped": dropped})
 
 
 @app.get("/recommend/explain/stream", dependencies=[Depends(require("reco.read"))])
@@ -1243,7 +1259,7 @@ def explain_stream(key: Optional[str] = None, summary: str = "", symptom: str = 
                 md = hit.get("markdown", "")
                 for i in range(0, len(md), 400):
                     yield f"data: {json.dumps({'type': 'delta', 'text': md[i:i + 400]}, ensure_ascii=False)}\n\n"
-                yield f"data: {json.dumps({'type': 'done', 'citations': hit.get('citations', []), 'cached': True}, ensure_ascii=False)}\n\n"
+                yield f"data: {json.dumps({'type': 'done', 'citations': hit.get('citations', []), 'dropped': hit.get('dropped', []), 'cached': True}, ensure_ascii=False)}\n\n"
                 return
             # 생성은 워커가 맡고 여기서는 따라 읽기만 한다 — 연결이 끊겨도
             # 생성은 계속되고 완료 시 캐시에 들어간다.
@@ -1263,10 +1279,10 @@ def explain_stream(key: Optional[str] = None, summary: str = "", symptom: str = 
             if job.error:
                 yield f"data: {json.dumps({'type': 'error', 'message': job.error}, ensure_ascii=False)}\n\n"
                 return
-            full = "".join(job.chunks)
-            valid = {m["key"] for m in matches}
-            cited = sorted({m for m in re.findall(r"LSI-\d+", full)} & valid)
-            yield f"data: {json.dumps({'type': 'done', 'citations': cited, 'cached': False}, ensure_ascii=False)}\n\n"
+            # 완성본은 워커가 이미 캐시에 넣었다 — 같은 판정(인용/미제공)을 재사용해
+            # 두 경로가 다른 답을 내지 않게 한다.
+            done_hit = _explain_md_cached(query_rec, match_recs) or {}
+            yield f"data: {json.dumps({'type': 'done', 'citations': done_hit.get('citations', []), 'dropped': done_hit.get('dropped', []), 'cached': False}, ensure_ascii=False)}\n\n"
         except Exception as e:
             yield f"data: {json.dumps({'type': 'error', 'message': str(e)[:200]}, ensure_ascii=False)}\n\n"
 

@@ -263,7 +263,9 @@ export default function FailureAnalysis({ onQueueChange, routeKey, onSelectKey, 
       if (d.type === "delta") {
         setReco((prev) => (prev ? { ...prev, explanation: (prev.explanation || "") + d.text } : prev));
       } else if (d.type === "done") {
-        setReco((prev) => (prev ? { ...prev, explanation_citations: d.citations || [], explanation_cached: d.cached } : prev));
+        setReco((prev) => (prev ? { ...prev, explanation_citations: d.citations || [],
+                                    explanation_dropped_citations: d.dropped || [],
+                                    explanation_cached: d.cached } : prev));
         finish();
       } else if (d.type === "error") {
         setReco((prev) => (prev ? { ...prev, explanation: (prev.explanation || "") + `\n\n_(생성 오류: ${d.message})_` } : prev));
