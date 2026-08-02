@@ -56,7 +56,8 @@ bash scripts/dev.sh        # 백엔드(:8001) + 프론트(:5173)
   "유사 사례 없음" 처리(LLM 설명도 생성 안 함). 매치별 강도 신호
   (`embed_cos`/`entity_overlap`/`bm25_raw`)를 API로 노출.
 - 평가: `src/eval_recommender.py --sets confusable,generated --paraphrase --rerank --both-gates`
-  — `--both-gates` 는 rerank ON/OFF 두 경로를 함께 본다. rerank 를 켠 수치만 보면
+  — `--both-gates` 는 rerank ON/OFF 두 경로를, `--wrong-chip` 은 신고자가 칩을
+  잘못 적은 상황을 함께 본다. rerank 를 켠 수치만 보면
   embed_cos 게이트의 결함이 가려진다(2026-08-02 실측).
   변별 셋 `eval_confusable` 은 `scripts/build_eval_confusable.py --paraphrase` 로 만든다
   — 같은 칩·분류의 다른 고장모드를 혼동 후보로 붙이고 증상을 현장 말투로 재서술해,

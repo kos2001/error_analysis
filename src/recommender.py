@@ -92,9 +92,15 @@ def _query_text(rec: dict) -> str:
     investigation: 진행 중 이슈의 조사·트리아지 코멘트에서 추출한 관찰/분석 단계
     신호(관찰 가능 — 확정 근본원인 아님). 이슈가 진행될수록 질의 표현이 풍부해진다.
     """
+    # chip 을 **넣지 않는다**. 요약에 이미 "[PM9C3-NVMe] ..." 형태로 들어 있어
+    # 구조화 필드로 한 번 더 넣으면 중복인데, 신고자가 칩을 잘못 적으면 그 오류가
+    # rerank 질의 텍스트를 오염시켜 엉뚱한 사례를 1위로 올린다.
+    # 실측(2026-08-02, confusable 34건): 칩 포함 시 정확한 칩 P@1 1.000 / **틀린 칩
+    # 0.824**, 칩 제외 시 정확한 칩 1.000 / 틀린 칩 **1.000** — 잃는 것 없이
+    # 오기입 견고성만 얻는다. 칩 신호는 _apply_boost 와 문서 표현(_doc_text)이 담당한다.
     return " ".join(p for p in [
         rec.get("summary", ""), rec.get("symptom", ""),
-        rec.get("chip", ""), rec.get("category", ""),
+        rec.get("category", ""),
         rec.get("debug_approach", ""), rec.get("root_cause", ""),
         rec.get("investigation", ""),
     ] if p)
