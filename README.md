@@ -85,6 +85,42 @@ HTTP 직접 호출)** 단일 엔진으로 생성한다. 모델·엔드포인트�
   `scripts/jira_webhook_register.py {list|register <공개URL>|delete <id>}`.
   `JIRA_WEBHOOK_SECRET` 설정 시 쿼리로 대조한다. 폴링과 동시 사용해도 무해하다.
 
+### MCP 서버 — Claude Code 등에서 이 지식베이스 쓰기
+
+백엔드의 조회 API 를 MCP 도구로 노출한다(`src/mcp_server.py`). **얇은 포워더**이고
+권한은 전부 백엔드가 토큰으로 판정하므로, 인가 규칙이 두 곳으로 갈라지지 않는다.
+
+도구 9개 — `find_similar` · `analyze_issue` · `list_unresolved` ·
+`get_cached_analysis` · `knowledge_overview` · `find_duplicate_clusters` ·
+`find_contradictions` · `draft_rca` · `whoami`
+
+**의도적으로 뺀 것**
+- Jira 게시(`/rca/approve`·`reject`) — 되돌리기 어렵고 외부로 나간다. 사람이 웹에서 승인.
+  MCP 로는 `draft_rca`(승인 대기 큐 투입)까지만.
+- 설정·사용자관리·동기화·캐시·자기점검 — 에이전트가 만질 이유가 없다.
+- **심층 분석 생성** — 캐시본만 돌려준다(`get_cached_analysis`). MCP 클라이언트가
+  이미 추론 주체라 백엔드에서 LLM 을 또 부르면 추론이 중첩되고 비용·지연이 두 배가
+  된다. 근거는 도구로 충분히 주므로 결론은 클라이언트가 낸다.
+
+전송 방식 두 가지 (같은 도구 정의):
+- **streamable-HTTP** — 서버가 `/mcp` 를 직접 제공한다. 클라이언트는 URL + 토큰만
+  있으면 되므로 **배포에 적합**. 백엔드 호출은 인프로세스(ASGITransport)라
+  자기 자신에게 소켓을 다시 열지 않는다. `RVP_MCP=0` 으로 끈다.
+- **stdio** — `python src/mcp_server.py`. 클라이언트가 프로세스를 띄운다(로컬용).
+  `LSI_API` · `LSI_MCP_TOKEN` 환경변수.
+
+토큰: `POST /auth/token` (로그인 상태에서 본인 신원으로 발급, 기본 30일).
+`Authorization: Bearer <token>` 또는 `X-RVP-Token` 헤더로 쓴다. 웹 세션 쿠키와
+**같은 서명 토큰**이라 검증 경로가 하나다. 폐기는 사용자 회수(그 신원의 모든 토큰
+무효) 또는 `RVP_SESSION_SECRET` 교체.
+
+원격 배포 시 `LSI_MCP_ALLOWED_HOSTS` 를 지정한다 — 미지정이면 로컬 Host 만 허용해
+원격 클라이언트가 421 로 거부된다(DNS 리바인딩 보호).
+
+클라이언트 설정 예시: `scripts/mcp_client_config.md`
+검증: `.venv/bin/python tests/test_mcp_server.py` (28개 — 도구 집합 고정, 게시·운영
+도구 미노출, 토큰 없음/위조/사용자/관리자 인가 분리, 캐시 전용 동작, 전송 계층)
+
 ### 인증(SSO) · 권한(RBAC)
 
 역할은 둘이다 — **관리자(admin)** / **사용자(user)**. 권한은 역할이 아니라 **기능
@@ -179,6 +215,7 @@ src/
   session.py            HttpOnly 서명 세션 쿠키
   user_store.py         인가 목록 쓰기 (등록·역할변경·회수 + 잠금 방지)
   llm_cache.py          LLM 생성물 콘텐츠 주소 캐시
+  mcp_server.py         MCP 서버 (stdio + streamable-HTTP, 얇은 포워더)
   preprocess.py         2) 전처리 + 엔티티/그래프 (엔티티 패턴 단일 소스)
   explorer.py           3) 탐색/검색/시각화
   recommender.py        해결책 추천기 (graph/bm25/hybrid/embed)
