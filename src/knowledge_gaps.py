@@ -11,6 +11,8 @@
 """
 from __future__ import annotations
 
+import threading
+
 import os
 from collections import Counter
 from pathlib import Path
@@ -31,6 +33,9 @@ def _save(events: list) -> None:
     write_json_atomic(STORE_FILE, events)
 
 
+_LOCK = threading.Lock()
+
+
 def record(query: dict, *, reason: str = "no_coverage", template: str = "",
            top_score: float | None = None) -> None:
     """공백 이벤트 적재. 동일 (template|summary, reason)의 잦은 반복도 모두 남겨 빈도 집계."""
@@ -41,11 +46,15 @@ def record(query: dict, *, reason: str = "no_coverage", template: str = "",
         "key": query.get("key", ""),
         "created_at": now_iso(),
     }
-    events = _load()
-    events.append(ev)
-    if len(events) > MAX_EVENTS:
-        events = events[-MAX_EVENTS:]
-    _save(events)
+    # 락 없이는 read-modify-write 가 겹쳐 동시 요청이 서로의 이벤트를 덮어쓴다
+    # (뒤 쓰기가 앞 이벤트를 통째로 지운다). 이 파일은 자기개선 loop 의 측정 입력이라
+    # 조용한 유실이 곧 잘못된 진단이 된다.
+    with _LOCK:
+        events = _load()
+        events.append(ev)
+        if len(events) > MAX_EVENTS:
+            events = events[-MAX_EVENTS:]
+        _save(events)
 
 
 def report(top: int = 20) -> dict:

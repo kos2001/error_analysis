@@ -203,6 +203,9 @@ export default function FailureAnalysis({ onQueueChange, routeKey, onSelectKey, 
   //  · esRef : 진행 중이던 SSE 를 반드시 닫는다. 닫지 않으면 이전 이슈의 델타가
   //            새 이슈의 explanation 뒤에 계속 붙는다(실제로 그랬다).
   const reqSeq = useRef(0);
+  // 이전 /recommend 를 실제로 **취소**한다. reqSeq 는 늦은 응답을 안 그릴 뿐이라
+  // 목록에서 ↑/↓ 를 누르고 있으면 임베딩+rerank 요청이 반복 횟수만큼 나간다.
+  const abortRef = useRef<AbortController | null>(null);
   const esRef = useRef<EventSource | null>(null);
   const activeKey = useRef<string>("");
 
@@ -212,10 +215,13 @@ export default function FailureAnalysis({ onQueueChange, routeKey, onSelectKey, 
 
   // 화면을 떠날 때(다른 페이지로 이동 등) 스트림을 닫는다. 서버는 연결이 끊겨도
   // 생성을 끝내 캐시에 넣으므로, 돌아오면 캐시본이 즉시 뜬다.
-  useEffect(() => closeStream, []);
+  useEffect(() => () => { closeStream(); abortRef.current?.abort(); }, []);
 
   const select = async (issue: Issue) => {
     const seq = ++reqSeq.current;
+    abortRef.current?.abort();         // 진행 중이던 이전 검색 요청 취소
+    const ac = new AbortController();
+    abortRef.current = ac;
     closeStream();                     // 이전 이슈의 스트리밍 중단
     activeKey.current = issue.key;
     setSel(issue); setReco(null); setErr(""); setLoading(true); setExplaining(false);
@@ -223,13 +229,13 @@ export default function FailureAnalysis({ onQueueChange, routeKey, onSelectKey, 
     try {
       const r = await fetch(`${API}/recommend`, {
         method: "POST", headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ key: issue.key, k: 4 }),
+        body: JSON.stringify({ key: issue.key, k: 4 }), signal: ac.signal,
       });
       const d = await r.json();
       if (seq !== reqSeq.current) return;   // 그 사이 다른 이슈로 옮겼다 — 버린다
       setReco(d);
     } catch (e: any) {
-      if (seq !== reqSeq.current) return;
+      if (e?.name === "AbortError" || seq !== reqSeq.current) return;
       setReco({ query: {}, matches: [], proposal: null, coverage: false, explanation: "[error] " + e.message });
     } finally { if (seq === reqSeq.current) setLoading(false); }
   };

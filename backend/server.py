@@ -863,7 +863,9 @@ def issue_graph(key: Optional[str] = None, k: int = 12, min_shared: int = 2):
         try:
             from reranker import rerank as _rerank
             docs = [_doc_text(r, analysis=True) for r in neigh]
-            order = _rerank(_doc_text(by_key[key], analysis=True), docs)
+            # 타임아웃을 명시한다 — 기본 60초라 게이트웨이가 /rerank 를 미지원하면
+            # 이슈를 하나 고를 때마다 1분씩 멈춘다(Recommender 는 같은 이유로 10초).
+            order = _rerank(_doc_text(by_key[key], analysis=True), docs, timeout=10)
             rr = {neigh[idx]["key"]: float(sc) for idx, sc in order}
             neigh.sort(key=lambda r: -rr.get(r["key"], 0.0))  # 관련도 내림차순
         except Exception:
@@ -1348,6 +1350,9 @@ _PREWARM: dict = {"thread": None, "running": False, "done": 0, "skipped": 0,
 def _prewarm_once(limit: int, gap_sec: float, only_key: str = "") -> None:
     st = _reco_state()
     targets = [r for r in st["unresolved"] if not only_key or r["key"] == only_key]
+    # 최신 이슈부터 — 지금 작업 중인 것이 먼저 열릴 가능성이 높다. created 가 없으면
+    # 뒤로 보낸다(정렬이 뒤집히지 않게 빈 문자열을 최소값으로 두고 역순 정렬).
+    targets.sort(key=lambda r: str(r.get("created") or ""), reverse=True)
     _PREWARM.update({"running": True, "done": 0, "skipped": 0, "failed": 0,
                      "total": min(len(targets), limit), "error": None, "finished_at": None})
     try:
@@ -1378,6 +1383,31 @@ def _prewarm_once(limit: int, gap_sec: float, only_key: str = "") -> None:
               f"· 실패 {_PREWARM['failed']}")
 
 
+def _prewarm_drain() -> None:
+    """남은 미해결 이슈를 **끝까지** 천천히 채운다.
+
+    기존에는 기동 직후 한 번(기본 20건)만 돌고 끝나, 미해결 127건 중 나머지는
+    첫 클릭에서 수십 초를 기다렸다(실측 캐시 28/127). 여기서는 라운드를 이어
+    돌리되 항목 사이 간격을 넉넉히 둬(RVP_PREWARM_IDLE_GAP_SEC, 기본 30초) API 를
+    몰아치지 않는다 — 127건이면 대략 한 시간 안에 채워진다.
+
+    이미 캐시에 있으면 건너뛰므로 재기동 비용은 거의 없고, KB 가 바뀌어 키가
+    달라진 항목만 다시 만든다.
+    """
+    gap = float(os.getenv("RVP_PREWARM_IDLE_GAP_SEC", "30") or 30)
+    rounds = 0
+    while os.getenv("RVP_PREWARM", "1") == "1":
+        rounds += 1
+        before = _PREWARM["done"]
+        _prewarm_once(limit=10_000, gap_sec=gap)     # 남은 전량, 느린 속도로
+        made = _PREWARM["done"] - before
+        _PREWARM["drain_rounds"] = rounds
+        if made == 0:
+            break                                     # 더 만들 것이 없다
+        time.sleep(gap)
+    print(f"[prewarm] 드레인 종료 — {rounds}라운드")
+
+
 def _start_prewarm(limit: int | None = None, only_key: str = "") -> bool:
     """예열을 백그라운드로 시작. 이미 돌고 있으면 False."""
     if _PREWARM["running"]:
@@ -1388,8 +1418,13 @@ def _start_prewarm(limit: int | None = None, only_key: str = "") -> bool:
     if lim <= 0:
         return False
     gap = float(os.getenv("RVP_PREWARM_GAP_SEC", "1.0") or 0)
-    t = threading.Thread(target=_prewarm_once, args=(lim, gap, only_key),
-                         name="explain-prewarm", daemon=True)
+    def run() -> None:
+        _prewarm_once(lim, gap, only_key)
+        # 특정 키만 요청받은 경우가 아니고 드레인이 켜져 있으면 나머지도 채운다.
+        if not only_key and os.getenv("RVP_PREWARM_DRAIN", "1") == "1":
+            _prewarm_drain()
+
+    t = threading.Thread(target=run, name="explain-prewarm", daemon=True)
     _PREWARM["thread"] = t
     t.start()
     return True
@@ -1398,7 +1433,11 @@ def _start_prewarm(limit: int | None = None, only_key: str = "") -> bool:
 @app.get("/explain/cache", dependencies=[Depends(require("knowledge.read"))])
 def explain_cache_stats():
     """캐시 현황 + 예열 진행 상태."""
-    return {"cache": llm_cache.stats(),
+    total = len(_reco_state()["unresolved"])
+    st = llm_cache.stats()
+    return {"cache": {**st, "unresolved_total": total,
+                      # 대략적 커버리지 — 캐시에는 해결 이슈 조회분도 섞이므로 상한 100%.
+                      "coverage_pct": min(100, round(st["entries"] / total * 100)) if total else None},
             "prewarm": {k: v for k, v in _PREWARM.items() if k != "thread"}}
 
 
@@ -1441,6 +1480,36 @@ def explain_cached(key: str, k: int = 4):
             "citations": hit.get("citations", [])}
 
 
+_DEMOTED = ("deprecated", "superseded")
+
+
+def _repick_proposal_after_lifecycle(result: dict) -> None:
+    """제안 근거가 폐기·대체된 사례면 살아 있는 사례로 갈아 끼운다.
+
+    바꿀 후보가 없으면(전부 강등) 제안을 지우지 않고 경고만 단다 — 근거가 낡았다는
+    사실을 알리는 편이, 아무 제안도 없이 비워 두는 것보다 판단에 도움이 된다.
+    """
+    prop = result.get("proposal")
+    matches = result.get("matches") or []
+    if not prop or not matches:
+        return
+    by_key = {m.get("key"): m for m in matches}
+    cur = by_key.get(prop.get("based_on"))
+    if not cur or (cur.get("lifecycle") or {}).get("state") not in _DEMOTED:
+        return                                    # 근거가 멀쩡하다
+    alive = [m for m in matches if (m.get("lifecycle") or {}).get("state") not in _DEMOTED]
+    if not alive:
+        prop["lifecycle_warning"] = "근거 사례가 모두 폐기·대체됨 — 시니어 검토 필요"
+        return
+    new = alive[0]                                # 강등 정렬 뒤 최상위 = 살아 있는 최상위
+    prop.update({
+        "root_cause": new.get("root_cause", ""), "resolution": new.get("resolution", ""),
+        "workaround": new.get("workaround", ""), "based_on": new.get("key", ""),
+        "based_on_verified": bool(new.get("verified")),
+        "lifecycle_warning": f"기존 근거 {cur.get('key')} 가 폐기·대체되어 {new.get('key')} 로 대체함",
+    })
+
+
 @app.post("/recommend", dependencies=[Depends(require("reco.read"))])
 def recommend(req: RecommendRequest):
     st = _reco_state()
@@ -1471,6 +1540,11 @@ def recommend(req: RecommendRequest):
     # 신선도·폐기 수명주기 주석(P2-5): 오래/폐기/대체 사례 경고 + 강등 정렬
     try:
         lifecycle.annotate(result["matches"])
+        # 제안 근거가 방금 강등된 사례면 다시 고른다.
+        # Recommender 는 lifecycle 을 모른 채 proposal 을 만들고, 강등은 그 **뒤에**
+        # 일어난다. 그대로 두면 매치 목록에서는 "폐기됨" 으로 뒤로 밀린 사례가
+        # proposal.based_on 으로는 최상위 제안이 되어 화면이 자기모순에 빠진다.
+        _repick_proposal_after_lifecycle(result)
     except Exception:
         pass
     _record_metric("recommend", {**(result.get("timing") or {}),
@@ -1491,7 +1565,10 @@ def recommend(req: RecommendRequest):
             gate = result.get("gate") or {}
             knowledge_gaps.record(query_rec, reason="no_coverage",
                                   template=template_key(query_rec.get("summary", "")),
-                                  top_score=gate.get("top_score") if isinstance(gate, dict) else None)
+                                  # 게이트 dict 의 강도 키는 신호에 따라 다르다
+                                  # (rerank_top / max_cos). top_score 는 없는 키였다.
+                                  top_score=(gate.get("rerank_top") or gate.get("max_cos"))
+                                            if isinstance(gate, dict) else None)
         except Exception:
             pass
     # 게이트 미통과 시 LLM 설명 생성 안 함 (무관 사례 기반 환각 방지)

@@ -21,7 +21,17 @@ export default function RcaQueue({ onBack, onChange }: { onBack: () => void; onC
   const [valid, setValid] = useState<Record<string, any>>({});       // key → 검증 결과
   const [validating, setValidating] = useState<string>("");
 
-  const load = () => fetch(`${API}/rca/pending`).then((r) => r.json()).then((d) => setItems(d.items ?? [])).catch(() => {});
+  // 실패를 삼키면 items=[] 가 되어 "대기 중인 초안이 없습니다" 로 보인다 —
+  // 승인 대기 건이 있는데도 없는 것처럼 보이는 것이 가장 나쁜 오표시다.
+  const [loadErr, setLoadErr] = useState("");
+  const load = () => {
+    setLoadErr("");
+    fetch(`${API}/rca/pending`)
+      .then((r) => (r.ok ? r.json() : r.json().catch(() => ({})).then((d) =>
+        Promise.reject(new Error(d.detail || `HTTP ${r.status}`)))))
+      .then((d) => setItems(d.items ?? []))
+      .catch((e) => setLoadErr(e.message || "불러오기 실패"));
+  };
   useEffect(() => { load(); }, []);
 
   const bodyOf = (it: QItem) => (edits[it.key] ?? it.body);
@@ -67,7 +77,14 @@ export default function RcaQueue({ onBack, onChange }: { onBack: () => void; onC
         <p className="text-sm text-zinc-400 mb-5">사람이 승인할 때만 Jira에 게시됩니다. 거부하면 게시되지 않습니다.</p>
 
         {items.length === 0 ? (
+          loadErr ? (
+          <div className="rounded-lg border border-red-900/60 bg-red-950/40 px-4 py-3 text-sm text-red-400">
+            승인 대기 목록을 불러오지 못했습니다 — {loadErr}
+            <button onClick={load} className="ml-2 underline hover:text-red-300">다시 시도</button>
+          </div>
+          ) : (
           <div className="text-center text-zinc-400 py-16 text-sm">대기 중인 초안이 없습니다. 분석 화면에서 미해결 이슈의 "RCA 초안 생성"으로 추가하세요.</div>
+          )
         ) : (
           <div className="space-y-4">
             {items.map((it) => (

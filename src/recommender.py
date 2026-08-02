@@ -268,6 +268,32 @@ class Recommender:
         except OSError:
             pass  # 캐시 실패는 치명적이지 않음
 
+    def embed_cached(self, texts: list[str], tag: str):
+        """텍스트 묶음을 임베딩하되 **디스크에 캐시**한다(내용+모델 주소).
+
+        KB 문서 임베딩(_init_embed)과 같은 방식이다. 이걸 쓰지 않으면 파생 분석이
+        호출마다 KB 전체를 다시 임베딩한다 — 실제로 /knowledge/contradictions 가
+        매 호출 4.0~4.4초를 썼다(대시보드는 열 때마다 호출한다).
+        """
+        import hashlib
+        from pathlib import Path
+        np = self._np
+        sig = self._model_name() + ("" if self.embed_backend == "fastembed" else f"@{self.embed_backend}")
+        digest = hashlib.md5(("\u0000".join(texts) + sig + tag).encode()).hexdigest()[:12]
+        cache = Path(__file__).resolve().parent.parent / "tmp_db" / f"emb_{tag}_{digest}.npz"
+        if cache.exists():
+            try:
+                return np.load(cache)["emb"]
+            except Exception:
+                pass                       # 손상된 캐시는 무시하고 다시 만든다
+        emb = self._embed_texts(texts, is_query=False)
+        try:
+            cache.parent.mkdir(exist_ok=True)
+            np.savez_compressed(cache, emb=emb)
+        except OSError:
+            pass
+        return emb
+
     def _cos_all(self, q: str):
         """질의 vs KB 전체 코사인 유사도 배열 (강도 신호).
 
