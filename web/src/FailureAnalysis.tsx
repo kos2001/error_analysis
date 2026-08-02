@@ -35,10 +35,25 @@ const CAT_COLOR: Record<string, string> = {
   Security: "bg-cyan-950/60 text-cyan-400",
 };
 const CAT_FALLBACK = "bg-zinc-800 text-zinc-300";
-// %값 → 색상(높을수록 강한 관련). 카드의 관련도/임베딩 색 구분용.
-const pctText = (pct: number) =>
-  pct >= 80 ? "text-emerald-400" : pct >= 60 ? "text-lime-400"
-    : pct >= 40 ? "text-amber-400" : "text-red-400";
+// 점수 → 색상. **게이트 임계를 기준으로** 칠한다.
+//
+// 예전에는 80/60/40 이라는 고정 백분율 띠를 썼다. 그런데 이 숫자들은 모델 원점수라
+// 의미 있는 범위가 0~100 이 아니다 — 실측(정답 83건):
+//   rerank  정답 최소 0.384 / 중앙 0.731  ·  무관 최대 0.154   (게이트 0.17)
+//   코사인   정답 최소 0.472 / 중앙 0.634  ·  무관 최대 0.541   (게이트 0.57)
+// 코사인은 정답 p25(0.591)와 무관 최대(0.541)가 붙어 있어 **둘 다 amber** 로 칠해졌다 —
+// 색이 통과/차단을 전혀 구분하지 못했다. 시스템은 통과라는데 화면은 위험색인 경우도
+// 생긴다(rerank 0.20 은 통과인데 빨강). 판정과 표시가 어긋나면 신뢰를 잃는다.
+//
+// 그래서 임계(t)를 0 점으로 두고 [t, 1] 을 다시 편다: 임계 미만은 빨강(실제로 차단),
+// 임계 위는 여유에 따라 amber → lime → emerald.
+const scoreText = (v: number, threshold?: number) => {
+  const t = threshold ?? 0.5;
+  if (v < t) return "text-red-400";
+  const room = 1 - t;
+  const rel = room > 0 ? (v - t) / room : 1;      // 임계 대비 여유 0~1
+  return rel >= 0.6 ? "text-emerald-400" : rel >= 0.3 ? "text-lime-400" : "text-amber-400";
+};
 
 const statusBadge = (s: string) =>
   s === "진행 중" ? "bg-emerald-400" : s === "해야 할 일" ? "bg-zinc-500" : "bg-sky-400";
@@ -467,6 +482,11 @@ export default function FailureAnalysis({ onQueueChange, routeKey, onSelectKey, 
     setFollowFocus(true);
   };
 
+  // 점수 색상의 기준선 — 서버가 실제로 쓰는 게이트 임계를 응답에서 가져온다.
+  // 프런트에 상수로 박으면 서버 재보정 때 조용히 어긋난다(판정과 표시의 불일치).
+  const rrThr = reco?.gate?.signal === "rerank" ? reco.gate.threshold : undefined;
+  const cosThr = reco?.gate?.signal === "embed_cos" ? reco.gate.cos_threshold : undefined;
+
   return (
     <div className="h-full flex bg-zinc-950 text-zinc-200">
       {showKeys && (
@@ -824,6 +844,8 @@ export default function FailureAnalysis({ onQueueChange, routeKey, onSelectKey, 
 
                     {/* 유사 사례 */}
                     <section>
+                      {/* 색상 기준이 되는 게이트 임계는 **응답에서** 읽는다. 프런트에
+                          박아 두면 서버가 재보정될 때(모델 교체 등) 조용히 어긋난다. */}
                       <div className="flex items-center gap-2 mb-3">
                         <h3 className="text-sm font-semibold tracking-tight text-zinc-200">유사 과거 해결 사례 {reco.matches.length}건</h3>
                         {reco.matches.filter((m) => !m.known_issue).length >= 2 && (
@@ -865,18 +887,26 @@ export default function FailureAnalysis({ onQueueChange, routeKey, onSelectKey, 
                                   ⚠ {m.lifecycle.warnings[0]}
                                 </span>
                               )}
-                              <span className="ml-auto flex items-center gap-2 text-[10px] text-zinc-400" title="관련도=reranker 재순위 점수(카드 정렬 기준) · 임베딩=bi-encoder 코사인">
+                              <span className="ml-auto flex items-center gap-2 text-[10px] text-zinc-400"
+                                title={"관련도=reranker 재순위 점수(카드 정렬 기준) · 임베딩=bi-encoder 코사인"
+                                  + (rrThr != null ? ` · 통과 임계 관련도 ${Math.round(rrThr * 100)}%` : "")
+                                  + (cosThr != null ? ` · 임베딩 ${Math.round(cosThr * 100)}%` : "")}>
                                 {m.rerank_score != null ? (
                                   <>
-                                    <span>관련도 <b className={`font-bold ${pctText(Math.round(m.rerank_score * 100))}`}>{Math.round(m.rerank_score * 100)}%</b></span>
+                                    <span>관련도 <b className={`font-bold ${scoreText(m.rerank_score, rrThr)}`}>{Math.round(m.rerank_score * 100)}%</b></span>
                                     {m.embed_cos != null && (
-                                      <span>임베딩 <b className={`font-bold ${pctText(Math.round(m.embed_cos * 100))}`}>{Math.round(m.embed_cos * 100)}%</b></span>
+                                      <span>임베딩 <b className={`font-bold ${scoreText(m.embed_cos, cosThr)}`}>{Math.round(m.embed_cos * 100)}%</b></span>
                                     )}
                                   </>
                                 ) : m.embed_cos != null ? (
-                                  <span>유사도 <b className={`font-bold ${pctText(Math.round(m.embed_cos * 100))}`}>{Math.round(m.embed_cos * 100)}%</b></span>
+                                  <span>유사도 <b className={`font-bold ${scoreText(m.embed_cos, cosThr)}`}>{Math.round(m.embed_cos * 100)}%</b></span>
                                 ) : (
-                                  <span>유사도 {m.score.toFixed(3)}</span>
+                                  // m.score 는 RRF 융합 점수다 — 순위를 합친 값이라 절댓값에
+                                  // 의미가 없다(최상위 매치도 0.040 쯤 나온다). 예전에는 이걸
+                                  // "유사도 0.040" 으로 보여줘 4% 유사도로 읽혔다.
+                                  <span title="순위 융합 점수 — 카드 정렬에만 쓰는 내부 값이라 절댓값에 의미가 없습니다">
+                                    관련도 <b className="text-zinc-400">측정 안 됨</b>
+                                  </span>
                                 )}
                               </span>
                             </div>
