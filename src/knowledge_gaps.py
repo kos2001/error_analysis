@@ -36,9 +36,42 @@ def _save(events: list) -> None:
 _LOCK = threading.Lock()
 
 
+DEDUP_SEC = float(os.getenv("RVP_GAPS_DEDUP_SEC", "60") or 0)
+
+
+def _ident(ev: dict) -> str:
+    return f"{ev.get('key') or ev.get('summary','')[:60]}|{ev.get('reason')}"
+
+
+def _too_soon(events: list, ev: dict) -> bool:
+    """같은 질의·같은 사유가 방금 들어왔으면 건너뛴다.
+
+    빈도 집계가 이 파일의 목적인데, 새로고침·재시도·한 화면에서 이어지는 호출이
+    같은 사건을 여러 번 세면 "자주 묻는다" 가 "여러 번 눌렀다" 로 오염된다.
+    """
+    if DEDUP_SEC <= 0:
+        return False
+    from datetime import datetime, timezone
+    ident, now = _ident(ev), datetime.now(timezone.utc)
+    for prev in reversed(events[-50:]):
+        if _ident(prev) != ident:
+            continue
+        try:
+            t = datetime.fromisoformat(str(prev.get("created_at", "")).replace("Z", "+00:00"))
+        except ValueError:
+            return False
+        if t.tzinfo is None:
+            t = t.replace(tzinfo=timezone.utc)
+        return (now - t).total_seconds() < DEDUP_SEC
+    return False
+
+
 def record(query: dict, *, reason: str = "no_coverage", template: str = "",
-           top_score: float | None = None) -> None:
-    """공백 이벤트 적재. 동일 (template|summary, reason)의 잦은 반복도 모두 남겨 빈도 집계."""
+           top_score: float | None = None) -> bool:
+    """공백 이벤트 적재. 반복 질의는 빈도로 세되, 순간 중복(재시도·연쇄 호출)은 접는다.
+
+    반환값은 실제로 적재했는지 — 호출부가 조용한 무시와 구분할 수 있게 한다.
+    """
     ev = {
         "summary": query.get("summary", ""), "symptom": query.get("symptom", ""),
         "chip": query.get("chip", ""), "category": query.get("category", ""),
@@ -51,10 +84,13 @@ def record(query: dict, *, reason: str = "no_coverage", template: str = "",
     # 조용한 유실이 곧 잘못된 진단이 된다.
     with _LOCK:
         events = _load()
+        if _too_soon(events, ev):
+            return False
         events.append(ev)
         if len(events) > MAX_EVENTS:
             events = events[-MAX_EVENTS:]
         _save(events)
+    return True
 
 
 def report(top: int = 20) -> dict:
