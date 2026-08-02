@@ -125,6 +125,10 @@ def main() -> int:
                     help="동일 칩/분류 부스트 오버라이드 (기본: Recommender 기본값)")
     ap.add_argument("--rerank", action="store_true",
                     help="2차 cross-encoder 재순위 + rerank 강도 게이트 사용(paraphrase 평가)")
+    ap.add_argument("--both-gates", action="store_true",
+                    help="rerank ON/OFF 두 경로를 모두 평가. rerank 를 켜면 rerank 게이트가 "
+                         "판정을 대신해 embed_cos 게이트의 결함이 가려진다 — 모델을 바꿀 때는 "
+                         "반드시 이걸로 본다(2026-08-02 mpnet 사례).")
     args = ap.parse_args()
 
     raw = load_all(args.refresh)
@@ -185,6 +189,25 @@ def main() -> int:
                 ep = evaluate_paraphrase(rec, ds)
                 results[tag][name] = ep
                 print(f"{'':<14}{'':<10}{name:<12}{ep['n_pos']:>4}{ep['P@1']:>7}{ep['P@3']:>7}{ep['MRR']:>7}{ep['gate_pass']:>7}{ep['junk_blocked']:>7}")
+
+            # rerank OFF 경로 — embed_cos 게이트 단독 성능. rerank 를 켠 수치만 보면
+            # 폴백 게이트가 못 쓰는 상태여도 전 지표 1.0 으로 보인다(실제로 그랬다).
+            if args.both_gates and args.rerank:
+                kw_off = {k: v for k, v in kw.items() if k != "rerank"}
+                rec_off = Recommender(resolved, method=m,
+                                      embed_backend=os.getenv("RVP_EMBED_BACKEND", "fastembed"),
+                                      embed_model=(os.getenv("RVP_EMBED_MODEL", "")
+                                                   or ("baai/bge-m3"
+                                                       if os.getenv("RVP_EMBED_BACKEND", "") == "openrouter"
+                                                       else "")),
+                                      **kw_off)
+                off_sets = dict(extra_sets)
+                if para_ds is not None:
+                    off_sets = {"paraphrase": para_ds, **off_sets}
+                for name, ds in off_sets.items():
+                    eo = evaluate_paraphrase(rec_off, ds)
+                    results[tag][f"{name}|rerank_off"] = eo
+                    print(f"{'':<14}{'':<10}{name + '·게이트만':<12}{eo['n_pos']:>4}{eo['P@1']:>7}{eo['P@3']:>7}{eo['MRR']:>7}{eo['gate_pass']:>7}{eo['junk_blocked']:>7}")
     # 결과 저장
     (ROOT / "tmp_db" / "eval_recommender.json").write_text(
         json.dumps(results, ensure_ascii=False, indent=2), encoding="utf-8")
