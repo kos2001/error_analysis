@@ -1126,6 +1126,61 @@ def _explain_md_store(query_rec: dict, match_recs: list[dict], value: dict) -> N
                                     "evidence": [r.get("key", "") for r in match_recs]})
 
 
+# ---------------------------------------------------------------------------
+# 심층 분석 생성 작업 — 클라이언트가 떠나도 끝까지 만들어 캐시에 넣는다.
+#
+# 예전에는 SSE 응답 제너레이터 안에서 직접 생성했다. 사용자가 다른 이슈·페이지로
+# 옮기면 연결이 끊기고 제너레이터가 취소돼 **거기까지 쓴 토큰이 통째로 버려졌다**.
+# 이제 생성은 워커 스레드가 맡고 SSE 는 그 결과를 따라 읽기만 한다:
+#   · 중간에 나가도 생성은 계속되고 완료 시 캐시에 들어간다 → 돌아오면 즉시 표시
+#   · 같은 분석을 두 곳에서 열어도 작업은 하나만 돈다(둘 다 같은 버퍼를 읽는다)
+# ---------------------------------------------------------------------------
+class _ExplainJob:
+    def __init__(self) -> None:
+        self.chunks: list[str] = []
+        self.done = False
+        self.error: str | None = None
+        self.tick = threading.Event()      # 새 조각이 붙을 때마다 깨운다
+
+    def add(self, text: str) -> None:
+        self.chunks.append(text)
+        self.tick.set()
+
+    def finish(self, error: str | None = None) -> None:
+        self.error = error
+        self.done = True
+        self.tick.set()
+
+
+_EXPLAIN_JOBS: dict[str, _ExplainJob] = {}
+_EXPLAIN_LOCK = threading.Lock()
+
+
+def _explain_job(query_rec: dict, match_recs: list[dict], ckey: str) -> _ExplainJob:
+    """진행 중인 작업이 있으면 그걸 주고, 없으면 시작한다."""
+    with _EXPLAIN_LOCK:
+        job = _EXPLAIN_JOBS.get(ckey)
+        if job is not None and not (job.done and job.error):
+            return job                      # 진행 중이거나 정상 완료된 작업에 붙는다
+        job = _ExplainJob()
+        _EXPLAIN_JOBS[ckey] = job
+
+    def work() -> None:
+        try:
+            for delta in _generate_explain_md(query_rec, match_recs):
+                job.add(delta)
+            job.finish()
+        except Exception as e:
+            job.finish(str(e)[:200])
+        finally:
+            # 완료본은 캐시에 있으므로 작업 기록은 오래 들고 있을 이유가 없다.
+            threading.Timer(60.0, lambda: _EXPLAIN_JOBS.pop(ckey, None)).start()
+
+    threading.Thread(target=work, name=f"explain:{query_rec.get('key','?')}",
+                     daemon=True).start()
+    return job
+
+
 def _generate_explain_md(query_rec: dict, match_recs: list[dict]):
     """심층 분석을 생성하며 토큰을 흘려보낸다(제너레이터). 완료 시 캐시에 저장.
 
@@ -1176,11 +1231,25 @@ def explain_stream(key: Optional[str] = None, summary: str = "", symptom: str = 
                     yield f"data: {json.dumps({'type': 'delta', 'text': md[i:i + 400]}, ensure_ascii=False)}\n\n"
                 yield f"data: {json.dumps({'type': 'done', 'citations': hit.get('citations', []), 'cached': True}, ensure_ascii=False)}\n\n"
                 return
-            acc: list[str] = []
-            for delta in _generate_explain_md(query_rec, match_recs):
-                acc.append(delta)
-                yield f"data: {json.dumps({'type': 'delta', 'text': delta}, ensure_ascii=False)}\n\n"
-            full = "".join(acc)
+            # 생성은 워커가 맡고 여기서는 따라 읽기만 한다 — 연결이 끊겨도
+            # 생성은 계속되고 완료 시 캐시에 들어간다.
+            model = os.getenv("RVP_MODEL") or os.getenv("OPENROUTER_MODEL", "")
+            ckey = llm_cache.make_key("explain_md", query_rec, match_recs, model,
+                                      extra=os.getenv("RVP_EXPLAIN_REASONING", "0"))
+            job = _explain_job(query_rec, match_recs, ckey)
+            sent = 0
+            while True:
+                while sent < len(job.chunks):
+                    yield f"data: {json.dumps({'type': 'delta', 'text': job.chunks[sent]}, ensure_ascii=False)}\n\n"
+                    sent += 1
+                if job.done:
+                    break
+                job.tick.wait(timeout=0.25)
+                job.tick.clear()
+            if job.error:
+                yield f"data: {json.dumps({'type': 'error', 'message': job.error}, ensure_ascii=False)}\n\n"
+                return
+            full = "".join(job.chunks)
             valid = {m["key"] for m in matches}
             cited = sorted({m for m in re.findall(r"LSI-\d+", full)} & valid)
             yield f"data: {json.dumps({'type': 'done', 'citations': cited, 'cached': False}, ensure_ascii=False)}\n\n"

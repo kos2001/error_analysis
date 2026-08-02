@@ -26,6 +26,9 @@ os.environ.update({
     "RVP_AUTH_DEV_LOGIN": "1",
     "RVP_SESSION_SECRET": "test-secret-fixed",
     "RVP_USERS_FILE": str(ROOT / "tests" / "_users_test.yaml"),
+    # MCP 미마운트 — 세션 매니저는 인스턴스당 1회만 run() 할 수 있는데 이 테스트는
+    # TestClient 를 여러 번 만든다. MCP 자체는 tests/test_mcp_server.py 가 본다.
+    "RVP_MCP": "0",
 })
 (ROOT / "tests" / "_users_test.yaml").write_text(
     "users:\n"
