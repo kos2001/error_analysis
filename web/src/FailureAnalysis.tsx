@@ -43,11 +43,13 @@ const statusBadge = (s: string) =>
   s === "진행 중" ? "bg-emerald-400" : s === "해야 할 일" ? "bg-zinc-500" : "bg-sky-400";
 
 /** Jira 원본으로 나가는 링크. base_url 은 /config/status 에서 받아 하드코딩하지 않는다. */
-function JiraLink({ base, issueKey, className = "" }: { base: string; issueKey: string; className?: string }) {
+function JiraLink({ base, issueKey, className = "", tabIndex }: {
+  base: string; issueKey: string; className?: string; tabIndex?: number;
+}) {
   if (!base || !issueKey) return null;
   return (
     <a href={`${base.replace(/\/$/, "")}/browse/${encodeURIComponent(issueKey)}`}
-      target="_blank" rel="noreferrer"
+      target="_blank" rel="noreferrer" tabIndex={tabIndex}
       onClick={(e) => e.stopPropagation()}
       title={`Jira에서 ${issueKey} 열기 (새 탭)`}
       className={`text-zinc-400 hover:text-sky-400 ${className}`}>↗</a>
@@ -431,6 +433,17 @@ export default function FailureAnalysis({ onQueueChange, routeKey, onSelectKey, 
   }, []);
 
   // 이슈 목록(또는 검색창) 안에서의 ↑/↓ — 여기서만 선택을 옮긴다.
+  // roving tabindex 라 선택이 바뀌면 **포커스도 같이 옮겨야 한다.** 안 그러면 방금
+  // tabIndex=-1 이 된 항목에 포커스가 남아 다음 Tab 이 문서 처음으로 튄다.
+  const activeRowRef = useRef<HTMLButtonElement | null>(null);
+  const [followFocus, setFollowFocus] = useState(false);
+  useEffect(() => {
+    if (!followFocus) return;                 // 마우스 클릭 선택까지 포커스를 뺏지 않는다
+    activeRowRef.current?.focus();
+    activeRowRef.current?.scrollIntoView({ block: "nearest" });
+    setFollowFocus(false);
+  }, [sel?.key, followFocus]);
+
   const listKeyDown = (e: React.KeyboardEvent) => {
     if (e.key !== "ArrowDown" && e.key !== "ArrowUp") return;
     if (!filtered.length) return;
@@ -440,6 +453,7 @@ export default function FailureAnalysis({ onQueueChange, routeKey, onSelectKey, 
       ? Math.min(filtered.length - 1, cur < 0 ? 0 : cur + 1)
       : Math.max(0, cur < 0 ? 0 : cur - 1);
     select(filtered[next]);
+    setFollowFocus(true);
   };
 
   return (
@@ -471,8 +485,12 @@ export default function FailureAnalysis({ onQueueChange, routeKey, onSelectKey, 
             <div className="text-xs font-medium uppercase tracking-wider text-zinc-400">
               미해결 이슈 {filterOn ? `${filtered.length} / ${issues.length}` : `${issues.length}`}건
             </div>
-            <button onClick={() => setLeftOpen(false)} title="목록 접기"
-              className="px-1 leading-none text-zinc-400 hover:text-sky-400">◀</button>
+            {/* 22×16px 이던 것을 28×28 로 — 마우스로도 집기 어려운 크기였다.
+                글자는 그대로 두고 클릭 영역만 넓힌다. */}
+            <button onClick={() => setLeftOpen(false)} title="목록 접기" aria-label="이슈 목록 접기"
+              className="grid h-7 w-7 place-items-center rounded leading-none text-zinc-400
+                         outline-none hover:bg-zinc-900 hover:text-sky-400
+                         focus-visible:ring-1 focus-visible:ring-sky-500">◀</button>
           </div>
           <input
             ref={searchRef}
@@ -506,7 +524,8 @@ export default function FailureAnalysis({ onQueueChange, routeKey, onSelectKey, 
               className="mt-1.5 text-[11px] text-zinc-400 underline hover:text-sky-400">필터 초기화</button>
           )}
         </div>
-        <div className="flex-1 overflow-y-auto">
+        <div className="flex-1 overflow-y-auto" role="listbox"
+          aria-label={`미해결 이슈 ${filtered.length}건 — 위아래 방향키로 이동`}>
           {listErr && (
             <div className="m-3 rounded-lg border border-red-900/60 bg-red-950/40 px-3 py-2 text-xs text-red-400">
               이슈 목록을 불러오지 못했습니다 — {listErr}
@@ -523,10 +542,19 @@ export default function FailureAnalysis({ onQueueChange, routeKey, onSelectKey, 
               )}
             </div>
           )}
-          {filtered.map((i) => (
-            <div key={i.key}
+          {/* 목록은 **탭 정지점 하나**로 묶는다(roving tabindex). 예전에는 137개 항목이
+              전부 탭 순서에 들어가 가운데 본문까지 Tab 을 273번 눌러야 했다(실측).
+              선택된 항목만 tabIndex=0 이고 나머지는 -1 — 목록 안 이동은 이미 있던
+              ↑/↓ 가 맡는다. 표준 listbox 규약이라 스크린리더도 "N개 중 M번째" 로 읽는다.
+              Jira 링크는 hover/focus 로만 드러나는 보조 동작이라 함께 빼 준다. */}
+          {filtered.map((i, idx) => {
+            const active = sel ? sel.key === i.key : idx === 0;
+            return (
+            <div key={i.key} role="option" aria-selected={sel?.key === i.key}
               className={`group flex items-start border-b border-zinc-800/70 transition hover:bg-zinc-900 ${sel?.key === i.key ? "bg-zinc-800/70" : ""}`}>
-              <button onClick={() => select(i)} className="flex-1 min-w-0 px-4 py-3 text-left">
+              <button onClick={() => select(i)} tabIndex={active ? 0 : -1}
+                ref={active ? activeRowRef : undefined}
+                className="flex-1 min-w-0 px-4 py-3 text-left outline-none focus-visible:ring-1 focus-visible:ring-inset focus-visible:ring-sky-500">
                 <div className="flex items-center gap-2">
                   <span className={`w-2 h-2 rounded-full ${statusBadge(i.status)}`} />
                   <span className="font-mono text-xs text-zinc-400">{i.key}</span>
@@ -534,10 +562,11 @@ export default function FailureAnalysis({ onQueueChange, routeKey, onSelectKey, 
                 </div>
                 <div className="text-sm mt-1 leading-snug line-clamp-2">{i.summary}</div>
               </button>
-              <JiraLink base={jiraBase} issueKey={i.key}
+              <JiraLink base={jiraBase} issueKey={i.key} tabIndex={active ? 0 : -1}
                 className="px-2 py-3 opacity-0 group-hover:opacity-100 focus:opacity-100 shrink-0" />
             </div>
-          ))}
+            );
+          })}
         </div>
       </aside>
       ) : (
@@ -594,6 +623,19 @@ export default function FailureAnalysis({ onQueueChange, routeKey, onSelectKey, 
           </form>
         </header>
 
+        {/* 상태 알림 — 버튼을 누르고 수 초 뒤에 결과가 도착하는데, 화면을 보지 않는
+            사용자에게는 아무 일도 일어나지 않은 것과 같았다(라이브 영역이 0개였다).
+            polite 라 진행 중인 낭독을 끊지 않는다. 시각적으로는 숨긴다 — 같은 내용을
+            아래 본문이 이미 보여준다. */}
+        <p className="sr-only" role="status" aria-live="polite">
+          {err ? `오류: ${err}`
+            : loading ? "유사 사례를 검색하는 중입니다"
+            : explaining ? "AI 심층 분석을 생성하는 중입니다"
+            : reco && !reco.coverage ? "유사한 과거 해결 사례를 찾지 못했습니다. 시니어 검토가 필요합니다"
+            : reco ? `유사 사례 ${reco.matches.length}건을 찾았습니다`
+            : ""}
+        </p>
+
         {err && (
           <div className="m-8 rounded-xl border border-red-900/60 bg-red-950/40 p-5 text-sm text-red-400">
             ⚠️ {err}
@@ -631,14 +673,16 @@ export default function FailureAnalysis({ onQueueChange, routeKey, onSelectKey, 
             {reco && !loading && (
               <>
                 {!reco.coverage ? (
-                  <div className="bg-amber-50 border border-amber-200 rounded-xl p-5 text-amber-800 text-sm">
+                  // 다크 UI 에 홀로 남아 있던 라이트 패널 — 화면에서 이 블록만
+                  // 하얗게 튀었다. 위쪽 오류 패널(red-950/40)과 같은 규칙으로 맞춘다.
+                  <div className="rounded-xl border border-amber-900/60 bg-amber-950/40 p-5 text-sm text-amber-300">
                     <div className="font-semibold">⚠️ 유사한 과거 해결 사례를 찾지 못했습니다.</div>
                     <p className="mt-1 leading-relaxed">
                       이 고장 유형은 처음 보고된 것일 수 있습니다. 근거 없는 추측을 막기 위해
                       AI 제안·심층 분석을 생성하지 않았습니다 — <b>시니어 검토가 필요합니다.</b>
                     </p>
                     {reco.gate && <GateDetail gate={reco.gate} />}
-                    <div className="mt-3 pt-2 border-t border-amber-200 text-[11px] text-amber-800/90">
+                    <div className="mt-3 border-t border-amber-900/60 pt-2 text-[11px] text-amber-300/80">
                       이 질의는 <b>지식 공백</b>으로 기록되어 어떤 고장 유형의 사례가 부족한지 집계됩니다
                       (지식 현황 → 지식 공백).
                       {reco.matches.length > 0 && (
@@ -859,8 +903,10 @@ export default function FailureAnalysis({ onQueueChange, routeKey, onSelectKey, 
         <div className="p-4 border-b border-zinc-800">
           <div className="flex items-center justify-between">
             <div className="text-sm font-semibold tracking-tight text-zinc-200">🔗 이슈 관계 그래프</div>
-            <button onClick={() => setRightOpen(false)} title="그래프 접기"
-              className="px-1 leading-none text-zinc-400 hover:text-sky-400">▶</button>
+            <button onClick={() => setRightOpen(false)} title="그래프 접기" aria-label="관계 그래프 접기"
+              className="grid h-7 w-7 place-items-center rounded leading-none text-zinc-400
+                         outline-none hover:bg-zinc-900 hover:text-sky-400
+                         focus-visible:ring-1 focus-visible:ring-sky-500">▶</button>
           </div>
           <div className="mt-0.5 text-[11px] text-zinc-400">공유 엔티티(칩·분류·기술용어) 기반 · 노드 클릭 시 이동</div>
         </div>
