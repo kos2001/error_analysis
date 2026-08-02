@@ -1357,6 +1357,27 @@ def metrics():
                                if cached else None,
         }
     out["rerank_failures"] = sum(1 for r in snap.get("recommend", []) if r.get("rerank_failed"))
+
+    # 재순위 상태 — **링버퍼가 아니라 살아 있는 추천기에서 읽는다.**
+    # rerank_failures 만 보면 안 된다: 차단기가 열리면 재순위를 아예 시도하지 않으므로
+    # 실패가 더 이상 기록되지 않고, 링버퍼가 밀려나면 0 이 된다. 문제가 영구화되는
+    # 순간 지표가 사라지는 셈이다. degraded=True 면 coverage 판정이 약한 폴백
+    # 게이트(embed_cos)로 내려가 있다 — 메타 없는 자유 문장에서 정답의 약 5%가 막힌다
+    # (실측 0.947, claudedocs/performance_backlog.md E-6).
+    try:
+        reco = _reco_state()["reco"]
+        out["rerank"] = {
+            "enabled": bool(reco.rerank),
+            "degraded": not reco.rerank,
+            "consecutive_fails": int(getattr(reco, "_rerank_fails", 0)),
+            "tripped_at": (_dt.datetime.fromtimestamp(reco._rerank_tripped_at)
+                           .isoformat(timespec="seconds")
+                           if getattr(reco, "_rerank_tripped_at", 0) else None),
+            "retry_sec": float(getattr(reco, "rerank_retry_sec", 0.0)),
+            "gate": "rerank" if reco.rerank else "embed_cos(폴백)",
+        }
+    except Exception as e:
+        out["rerank"] = {"error": str(e)[:120]}
     return out
 
 
