@@ -41,7 +41,7 @@ def _http():
 import sys as _sys
 from pathlib import Path
 _sys.path.insert(0, str(Path(__file__).resolve().parent))
-from preprocess import tokenize, extract_entities, normalize_text  # noqa: E402  (단일 소스)
+from preprocess import tokenize, extract_entities  # noqa: E402  (단일 소스)
 
 # 같은 템플릿(=같은 근본원인 클래스) 식별: 요약에서 칩 prefix와 변형 suffix 제거.
 # 변형 suffix는 항상 " (고객사 / 호스트)" 형태(공백+슬래시 포함)이므로,
@@ -101,9 +101,7 @@ def _doc_text(rec: dict, analysis: bool = True) -> str:
     ]
     if analysis:
         parts += [rec.get("debug_approach", ""), rec.get("root_cause", "")]
-    # 임베딩·리랭커에도 같은 표기로 넣는다 — BM25 만 정규화하면 두 랭커가 서로 다른
-    # 텍스트를 보게 되고, 그건 정규화를 안 한 것보다 진단하기 어렵다.
-    return normalize_text(" ".join(p for p in parts if p))
+    return " ".join(p for p in parts if p)
 
 
 def _query_text(rec: dict) -> str:
@@ -119,12 +117,12 @@ def _query_text(rec: dict) -> str:
     # 실측(2026-08-02, confusable 34건): 칩 포함 시 정확한 칩 P@1 1.000 / **틀린 칩
     # 0.824**, 칩 제외 시 정확한 칩 1.000 / 틀린 칩 **1.000** — 잃는 것 없이
     # 오기입 견고성만 얻는다. 칩 신호는 _apply_boost 와 문서 표현(_doc_text)이 담당한다.
-    return normalize_text(" ".join(p for p in [
+    return " ".join(p for p in [
         rec.get("summary", ""), rec.get("symptom", ""),
         rec.get("category", ""),
         rec.get("debug_approach", ""), rec.get("root_cause", ""),
         rec.get("investigation", ""),
-    ] if p))
+    ] if p)
 
 
 @dataclass
