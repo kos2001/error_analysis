@@ -182,6 +182,10 @@ def _build_reco_state() -> dict:
             method=os.getenv("RVP_RECO_METHOD", "hybrid_embed"),
             rerank=os.getenv("RVP_RERANK", "1") == "1",
             rerank_model=os.getenv("RVP_RERANK_MODEL", "cohere/rerank-v3.5"),
+            # 게으른 임베딩(E-1) — 기본 꺼짐. 실서버 A/B 후 판단한다.
+            lazy_embed=os.getenv("RVP_LAZY_EMBED", "0") == "1",
+            **({"rerank_top_n": int(os.environ["RVP_RERANK_TOP_N"])}
+               if os.getenv("RVP_RERANK_TOP_N") else {}),
             # 임베딩 백엔드/모델. 사내 게이트웨이 시 openrouter+bge-m3.
             #
             # 로컬 임베딩(e5-large)을 시도했다가 되돌렸다 — 격리 벤치에서는 질의
