@@ -121,9 +121,16 @@ class Recommender:
     rerank: bool = False                  # True → recommend()에서 top-N 재순위 + 강도 게이트
     rerank_model: str = "cohere/rerank-v3.5"
     rerank_top_n: int = 20                # 1차에서 재순위에 넘길 후보 수
-    rerank_gate: float = 0.20             # coverage 게이트 임계(rerank relevance_score).
-    # 0.20 근거: 측정(scripts/ab_reranker.py, 2026-06-13) — 정답 최상위 점수 최소 0.384,
-    # 무관 질의 최상위 최대 0.042. 둘 사이 양쪽 마진(≈0.16/0.18) 확보하는 값.
+    rerank_gate: float = 0.17             # coverage 게이트 임계(rerank relevance_score).
+    # 0.17 근거(재보정 2026-08-02, 정답 107 / 무관 46 — confusable+paraphrase+generated):
+    # 정답 최상위 최소 0.187, 무관 최상위 최대 0.154 → 그 사이. FN=0, FP=0.
+    # 이전 값 0.20 은 2026-06-13 측정(정답 최소 0.384 / 무관 최대 0.042)에서 왔는데,
+    # 그때는 쉬운 셋만 있어 여유가 커 보였다. 재서술+혼동 후보를 넣은 변별 셋에서는
+    # 0.20 이 정답 1건(conf-LSI-174, 0.187)을 차단했다 — 쉬운 셋으로 잡은 임계가
+    # 어려운 질의를 자른 것이다.
+    # 마진이 ±0.017 로 얇다. 무관 쪽 최대값은 n-conf-04("사원증 인식이 간헐적으로
+    # 실패") 로, 하드웨어 간헐 고장과 표현이 겹쳐 점수가 높다 — 실제로 어려운
+    # 음성 샘플이며 이 압축은 정직한 값이다. 모델·평가셋 변경 시 재보정할 것.
     rerank_timeout: int = 10              # /rerank 호출 타임아웃(초). 실측 호출당 ≈0.6s —
     # 게이트웨이가 /rerank 미지원일 때 질의가 기본 60s에 묶이지 않게 짧게 제한.
     rerank_fail_limit: int = 3            # 연속 실패 시 rerank 자동 비활성(circuit breaker) —
@@ -343,7 +350,13 @@ class Recommender:
         return ranked
 
     def recommend(self, query_rec: dict, k: int = 3, exclude_key: str | None = None) -> dict:
+        # 단계별 소요(ms)를 응답에 실어 보낸다 — 격리 벤치가 서버 지연을 예측하지
+        # 못한다는 것을 실측으로 배웠다(백로그 E-0). 상시 수치가 있어야 회귀를 잡는다.
+        import time as _t
+        timing: dict[str, float] = {}
+        _t0 = _t.perf_counter()
         ranked_all = self.rank(query_rec, exclude_key)
+        timing["rank_ms"] = round((_t.perf_counter() - _t0) * 1000, 1)
         qtext = _query_text(query_rec)
         # ---- 2차 재순위(reranker): 1차 top-N을 cross-encoder로 재채점 ----
         rr_scores: dict[int, float] = {}
@@ -351,9 +364,11 @@ class Recommender:
             from reranker import rerank as _rerank  # 지연 임포트(선택 의존)
             cand = [i for i, _ in ranked_all[:self.rerank_top_n]]
             docs = [_doc_text(self.kb[i], analysis=self.doc_analysis) for i in cand]
+            _t1 = _t.perf_counter()
             try:
                 order = _rerank(qtext, docs, model=self.rerank_model,
                                 timeout=self.rerank_timeout)
+                timing["rerank_ms"] = round((_t.perf_counter() - _t1) * 1000, 1)
                 rr_scores = {cand[idx]: sc for idx, sc in order}
                 reranked = [(cand[idx], sc) for idx, sc in order]
                 tail = [(i, s) for i, s in ranked_all if i not in rr_scores]
@@ -361,6 +376,8 @@ class Recommender:
                 self._rerank_fails = 0
             except Exception as e:
                 # rerank 실패 시 1차 순위로 폴백(파이프라인 무중단).
+                timing["rerank_ms"] = round((_t.perf_counter() - _t1) * 1000, 1)
+                timing["rerank_failed"] = 1
                 self._rerank_fails += 1
                 if self._rerank_fails >= self.rerank_fail_limit:
                     self.rerank = False
@@ -370,12 +387,14 @@ class Recommender:
         q_ents = query_entities(query_rec)
         # 강도 신호 — RRF(순위 기반) 점수와 별개. 게이트/신뢰도 표시는 이것만 사용한다.
         cos = bm25_raw = None
+        _t2 = _t.perf_counter()
         # 조건은 _kb_emb(임베딩 보유 여부) — _embedder는 fastembed 전용 객체라
         # openrouter 백엔드에서 항상 None이었고, 그 탓에 신호·embed_cos 게이트가
         # 통째로 생략돼 coverage가 무조건 True였다(무관 차단율 0.0, 2026-08-01 실측).
         if self.signals and self._kb_emb is not None:
             cos = self._cos_all(qtext)
             bm25_raw = self._bm25.get_scores(tokenize(qtext))
+        timing["signals_ms"] = round((_t.perf_counter() - _t2) * 1000, 1)
         matches = []
         for i, score in ranked:
             r = self.kb[i]
@@ -450,7 +469,9 @@ class Recommender:
                     "verified_bonus": rep["verified"],
                 },
             }
-        return {"matches": matches, "proposal": proposal, "coverage": coverage, "gate": gate}
+        timing["total_ms"] = round((_t.perf_counter() - _t0) * 1000, 1)
+        return {"matches": matches, "proposal": proposal, "coverage": coverage,
+                "gate": gate, "timing": timing}
 
 
 if __name__ == "__main__":

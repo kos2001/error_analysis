@@ -78,6 +78,7 @@ export default function Dashboard({ onOpenIssue, can }: {
   const articles = useEndpoint<any>("/knowledge/known-issues");
   const kstore = useEndpoint<any>("/knowledge/stats");
   const cache = useEndpoint<any>("/explain/cache");
+  const metrics = useEndpoint<any>("/metrics");
   const [queueRev, setQueueRev] = useState(0);
   const queue = useEndpoint<any>("/improve/queue", queueRev);
 
@@ -397,6 +398,41 @@ export default function Dashboard({ onOpenIssue, can }: {
               캐시 비우기
             </button>
           </div>
+          )}
+        </Card>
+
+        {/* 서빙 지연 */}
+        <Card title="서빙 지연" hint="최근 요청의 단계별 분포 — 회귀 감시"
+          loading={metrics.loading} error={metrics.error} onRetry={metrics.reload}>
+          {metrics.data?.recommend?.count ? (
+            <>
+              <div className="grid grid-cols-2 gap-2 mb-3">
+                <StatTile label="/recommend p50"
+                  value={`${metrics.data.recommend.stages_ms?.total_ms?.p50 ?? "—"}ms`}
+                  sub={`p90 ${metrics.data.recommend.stages_ms?.total_ms?.p90 ?? "—"}ms`}
+                  tone={(metrics.data.recommend.stages_ms?.total_ms?.p50 ?? 0) > 1000 ? "warn" : "neutral"}
+                  title="캐시 히트를 제외한 실제 검색 경로" />
+                <StatTile label="캐시 히트율"
+                  value={metrics.data.recommend.cache_hit_rate != null
+                    ? `${Math.round(metrics.data.recommend.cache_hit_rate * 100)}%` : "—"}
+                  sub={`히트 ${metrics.data.recommend.cache_hits} / ${metrics.data.recommend.count}건`}
+                  tone="good" />
+              </div>
+              <BarList unit="ms" labelW={92}
+                items={Object.entries(metrics.data.recommend.stages_ms || {})
+                  .filter(([k]) => k !== "total_ms")
+                  .map(([k, v]: any) => ({ label: k.replace("_ms", ""), value: v.p50 ?? 0,
+                                           hint: `${k} p50 ${v.p50}ms · p90 ${v.p90}ms (n=${v.n})` }))} />
+              <div className="mt-2 text-[11px] text-zinc-400">
+                최근 {metrics.data.window}건 기준 · 캐시 히트 p50{" "}
+                {metrics.data.recommend.cached_total_ms?.p50 ?? "—"}ms
+                {metrics.data.rerank_failures > 0 && (
+                  <span className="ml-2 text-amber-400">rerank 실패 {metrics.data.rerank_failures}건</span>
+                )}
+              </div>
+            </>
+          ) : (
+            <div className="text-xs text-zinc-400">아직 요청이 없습니다 — 분석을 몇 번 돌리면 채워집니다.</div>
           )}
         </Card>
 
