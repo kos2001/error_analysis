@@ -30,7 +30,8 @@ def detect(reco, *, sim_hi: float = 0.85, rc_lo: float = 0.60, max_pairs: int = 
     # 근본원인 임베딩(있는 것만) — 같은 임베더 재사용
     rcs = [(r.get("root_cause") or "").strip() for r in kb]
     has_rc = [bool(t) for t in rcs]
-    rc_emb = reco._embed_texts([t if t else " " for t in rcs], is_query=False)
+    # 캐시 경유 — 예전에는 호출마다 KB 전체를 다시 임베딩해 4초를 썼다.
+    rc_emb = reco.embed_cached([t if t else " " for t in rcs], tag="rootcause")
     R = np.asarray(rc_emb, dtype=np.float32)
     Rn = R / (np.linalg.norm(R, axis=1, keepdims=True) + 1e-9)
     rc_sim = Rn @ Rn.T
