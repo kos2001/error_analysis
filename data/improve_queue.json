@@ -185,11 +185,11 @@
     "rationale": "유사도 0.869로 묶인 5건 중복 사례 — 정규 기사로 승격 권장",
     "evidence": {
       "members": [
+        "LSI-106",
+        "LSI-43",
         "LSI-22",
         "LSI-127",
-        "LSI-190",
-        "LSI-43",
-        "LSI-106"
+        "LSI-190"
       ],
       "size": 5,
       "avg_similarity": 0.869,
@@ -201,7 +201,7 @@
     "id": "S-8",
     "state": "open",
     "created_at": "2026-06-17T09:00:15",
-    "updated_at": "2026-07-02T09:00:07"
+    "updated_at": "2026-08-02T09:00:15"
   },
   {
     "type": "promote_known_issue",
@@ -210,11 +210,11 @@
     "rationale": "유사도 0.807로 묶인 5건 중복 사례 — 정규 기사로 승격 권장",
     "evidence": {
       "members": [
-        "LSI-23",
-        "LSI-149",
         "LSI-107",
+        "LSI-149",
         "LSI-44",
-        "LSI-191"
+        "LSI-191",
+        "LSI-23"
       ],
       "size": 5,
       "avg_similarity": 0.807,
@@ -226,7 +226,7 @@
     "id": "S-9",
     "state": "open",
     "created_at": "2026-06-17T09:00:15",
-    "updated_at": "2026-07-02T09:00:07"
+    "updated_at": "2026-08-02T09:00:15"
   },
   {
     "type": "promote_known_issue",
@@ -331,10 +331,10 @@
     "rationale": "유사도 0.907로 묶인 4건 중복 사례 — 정규 기사로 승격 권장",
     "evidence": {
       "members": [
-        "LSI-51",
-        "LSI-135",
         "LSI-114",
-        "LSI-72"
+        "LSI-135",
+        "LSI-72",
+        "LSI-51"
       ],
       "size": 4,
       "avg_similarity": 0.907,
@@ -346,7 +346,7 @@
     "id": "S-14",
     "state": "open",
     "created_at": "2026-06-17T09:00:15",
-    "updated_at": "2026-07-02T09:00:07"
+    "updated_at": "2026-08-02T09:00:15"
   },
   {
     "type": "promote_known_issue",
@@ -527,7 +527,7 @@
     "id": "S-22",
     "state": "open",
     "created_at": "2026-06-17T09:00:15",
-    "updated_at": "2026-07-31T09:00:05"
+    "updated_at": "2026-08-02T09:00:15"
   },
   {
     "type": "normalize_ontology",
@@ -550,7 +550,7 @@
     "id": "S-23",
     "state": "open",
     "created_at": "2026-06-17T09:00:15",
-    "updated_at": "2026-08-01T09:00:01"
+    "updated_at": "2026-08-02T09:00:15"
   },
   {
     "type": "promote_known_issue",
@@ -861,9 +861,9 @@
     "evidence": {
       "members": [
         "LSI-208",
-        "LSI-232",
         "LSI-216",
-        "LSI-224"
+        "LSI-224",
+        "LSI-232"
       ],
       "size": 4,
       "avg_similarity": 0.906,
@@ -875,7 +875,7 @@
     "id": "S-36",
     "state": "open",
     "created_at": "2026-07-04T09:00:12",
-    "updated_at": "2026-07-31T09:00:05"
+    "updated_at": "2026-08-02T09:00:15"
   },
   {
     "type": "promote_known_issue",
@@ -899,7 +899,7 @@
     "id": "S-37",
     "state": "open",
     "created_at": "2026-07-04T09:00:12",
-    "updated_at": "2026-07-31T09:00:05"
+    "updated_at": "2026-08-02T09:00:15"
   },
   {
     "type": "promote_known_issue",
@@ -922,7 +922,7 @@
     "id": "S-38",
     "state": "open",
     "created_at": "2026-07-04T09:00:12",
-    "updated_at": "2026-07-31T09:00:05"
+    "updated_at": "2026-08-02T09:00:15"
   },
   {
     "type": "promote_known_issue",
@@ -932,8 +932,8 @@
     "evidence": {
       "members": [
         "LSI-217",
-        "LSI-241",
-        "LSI-233"
+        "LSI-233",
+        "LSI-241"
       ],
       "size": 3,
       "avg_similarity": 0.95,
@@ -945,7 +945,7 @@
     "id": "S-39",
     "state": "open",
     "created_at": "2026-07-04T09:00:12",
-    "updated_at": "2026-07-31T09:00:05"
+    "updated_at": "2026-08-02T09:00:15"
   },
   {
     "type": "promote_known_issue",
@@ -955,8 +955,8 @@
     "evidence": {
       "members": [
         "LSI-249",
-        "LSI-267",
-        "LSI-261"
+        "LSI-261",
+        "LSI-267"
       ],
       "size": 3,
       "avg_similarity": 0.91,
@@ -968,6 +968,328 @@
     "id": "S-40",
     "state": "open",
     "created_at": "2026-07-04T09:00:12",
-    "updated_at": "2026-07-31T09:00:05"
+    "updated_at": "2026-08-02T09:00:15"
+  },
+  {
+    "type": "promote_known_issue",
+    "priority": "P2",
+    "target": "LSI-118",
+    "rationale": "유사도 0.878로 묶인 7건 중복 사례 — 정규 기사로 승격 권장",
+    "evidence": {
+      "members": [
+        "LSI-118",
+        "LSI-76",
+        "LSI-13",
+        "LSI-139",
+        "LSI-202",
+        "LSI-55",
+        "LSI-97"
+      ],
+      "size": 7,
+      "avg_similarity": 0.878,
+      "chips": [
+        "MDM-5400"
+      ]
+    },
+    "action_hint": "POST /knowledge/known-issue (members 승격)",
+    "id": "S-41",
+    "state": "open",
+    "created_at": "2026-08-02T09:00:15",
+    "updated_at": "2026-08-02T09:00:15"
+  },
+  {
+    "type": "promote_known_issue",
+    "priority": "P2",
+    "target": "LSI-113",
+    "rationale": "유사도 0.85로 묶인 6건 중복 사례 — 정규 기사로 승격 권장",
+    "evidence": {
+      "members": [
+        "LSI-113",
+        "LSI-8",
+        "LSI-155",
+        "LSI-71",
+        "LSI-50",
+        "LSI-29"
+      ],
+      "size": 6,
+      "avg_similarity": 0.85,
+      "chips": [
+        "PM9C3-NVMe"
+      ]
+    },
+    "action_hint": "POST /knowledge/known-issue (members 승격)",
+    "id": "S-42",
+    "state": "open",
+    "created_at": "2026-08-02T09:00:15",
+    "updated_at": "2026-08-02T09:00:15"
+  },
+  {
+    "type": "promote_known_issue",
+    "priority": "P2",
+    "target": "LSI-133",
+    "rationale": "유사도 0.9로 묶인 6건 중복 사례 — 정규 기사로 승격 권장",
+    "evidence": {
+      "members": [
+        "LSI-133",
+        "LSI-154",
+        "LSI-70",
+        "LSI-196",
+        "LSI-49",
+        "LSI-175"
+      ],
+      "size": 6,
+      "avg_similarity": 0.9,
+      "chips": [
+        "PM9C3-NVMe"
+      ]
+    },
+    "action_hint": "POST /knowledge/known-issue (members 승격)",
+    "id": "S-43",
+    "state": "open",
+    "created_at": "2026-08-02T09:00:15",
+    "updated_at": "2026-08-02T09:00:15"
+  },
+  {
+    "type": "promote_known_issue",
+    "priority": "P2",
+    "target": "LSI-101",
+    "rationale": "유사도 0.874로 묶인 5건 중복 사례 — 정규 기사로 승격 권장",
+    "evidence": {
+      "members": [
+        "LSI-101",
+        "LSI-17",
+        "LSI-164",
+        "LSI-59",
+        "LSI-80"
+      ],
+      "size": 5,
+      "avg_similarity": 0.874,
+      "chips": [
+        "PMIC-S2MPS27"
+      ]
+    },
+    "action_hint": "POST /knowledge/known-issue (members 승격)",
+    "id": "S-44",
+    "state": "open",
+    "created_at": "2026-08-02T09:00:15",
+    "updated_at": "2026-08-02T09:00:15"
+  },
+  {
+    "type": "promote_known_issue",
+    "priority": "P2",
+    "target": "LSI-102",
+    "rationale": "유사도 0.827로 묶인 5건 중복 사례 — 정규 기사로 승격 권장",
+    "evidence": {
+      "members": [
+        "LSI-102",
+        "LSI-144",
+        "LSI-81",
+        "LSI-123",
+        "LSI-18"
+      ],
+      "size": 5,
+      "avg_similarity": 0.827,
+      "chips": [
+        "PMIC-S2MPS27"
+      ]
+    },
+    "action_hint": "POST /knowledge/known-issue (members 승격)",
+    "id": "S-45",
+    "state": "open",
+    "created_at": "2026-08-02T09:00:15",
+    "updated_at": "2026-08-02T09:00:15"
+  },
+  {
+    "type": "promote_known_issue",
+    "priority": "P2",
+    "target": "LSI-119",
+    "rationale": "유사도 0.859로 묶인 5건 중복 사례 — 정규 기사로 승격 권장",
+    "evidence": {
+      "members": [
+        "LSI-119",
+        "LSI-98",
+        "LSI-14",
+        "LSI-182",
+        "LSI-140"
+      ],
+      "size": 5,
+      "avg_similarity": 0.859,
+      "chips": [
+        "MDM-5400"
+      ]
+    },
+    "action_hint": "POST /knowledge/known-issue (members 승격)",
+    "id": "S-46",
+    "state": "open",
+    "created_at": "2026-08-02T09:00:15",
+    "updated_at": "2026-08-02T09:00:15"
+  },
+  {
+    "type": "promote_known_issue",
+    "priority": "P2",
+    "target": "LSI-174",
+    "rationale": "유사도 0.822로 묶인 5건 중복 사례 — 정규 기사로 승격 권장",
+    "evidence": {
+      "members": [
+        "LSI-174",
+        "LSI-69",
+        "LSI-27",
+        "LSI-6",
+        "LSI-90"
+      ],
+      "size": 5,
+      "avg_similarity": 0.822,
+      "chips": [
+        "PM9C3-NVMe"
+      ]
+    },
+    "action_hint": "POST /knowledge/known-issue (members 승격)",
+    "id": "S-47",
+    "state": "open",
+    "created_at": "2026-08-02T09:00:15",
+    "updated_at": "2026-08-02T09:00:15"
+  },
+  {
+    "type": "promote_known_issue",
+    "priority": "P2",
+    "target": "LSI-103",
+    "rationale": "유사도 0.857로 묶인 4건 중복 사례 — 정규 기사로 승격 권장",
+    "evidence": {
+      "members": [
+        "LSI-103",
+        "LSI-19",
+        "LSI-145",
+        "LSI-40"
+      ],
+      "size": 4,
+      "avg_similarity": 0.857,
+      "chips": [
+        "NPU-EdgeX2"
+      ]
+    },
+    "action_hint": "POST /knowledge/known-issue (members 승격)",
+    "id": "S-48",
+    "state": "open",
+    "created_at": "2026-08-02T09:00:15",
+    "updated_at": "2026-08-02T09:00:15"
+  },
+  {
+    "type": "promote_known_issue",
+    "priority": "P2",
+    "target": "LSI-131",
+    "rationale": "유사도 0.895로 묶인 4건 중복 사례 — 정규 기사로 승격 권장",
+    "evidence": {
+      "members": [
+        "LSI-131",
+        "LSI-89",
+        "LSI-47",
+        "LSI-173"
+      ],
+      "size": 4,
+      "avg_similarity": 0.895,
+      "chips": [
+        "SE-Secure7"
+      ]
+    },
+    "action_hint": "POST /knowledge/known-issue (members 승격)",
+    "id": "S-49",
+    "state": "open",
+    "created_at": "2026-08-02T09:00:15",
+    "updated_at": "2026-08-02T09:00:15"
+  },
+  {
+    "type": "promote_known_issue",
+    "priority": "P2",
+    "target": "LSI-151",
+    "rationale": "유사도 0.922로 묶인 4건 중복 사례 — 정규 기사로 승격 권장",
+    "evidence": {
+      "members": [
+        "LSI-151",
+        "LSI-172",
+        "LSI-88",
+        "LSI-193"
+      ],
+      "size": 4,
+      "avg_similarity": 0.922,
+      "chips": [
+        "SE-Secure7"
+      ]
+    },
+    "action_hint": "POST /knowledge/known-issue (members 승격)",
+    "id": "S-50",
+    "state": "open",
+    "created_at": "2026-08-02T09:00:15",
+    "updated_at": "2026-08-02T09:00:15"
+  },
+  {
+    "type": "promote_known_issue",
+    "priority": "P2",
+    "target": "LSI-171",
+    "rationale": "유사도 0.837로 묶인 4건 중복 사례 — 정규 기사로 승격 권장",
+    "evidence": {
+      "members": [
+        "LSI-171",
+        "LSI-66",
+        "LSI-87",
+        "LSI-24"
+      ],
+      "size": 4,
+      "avg_similarity": 0.837,
+      "chips": [
+        "AUTO-MCU-V9"
+      ]
+    },
+    "action_hint": "POST /knowledge/known-issue (members 승격)",
+    "id": "S-51",
+    "state": "open",
+    "created_at": "2026-08-02T09:00:15",
+    "updated_at": "2026-08-02T09:00:15"
+  },
+  {
+    "type": "promote_known_issue",
+    "priority": "P2",
+    "target": "LSI-189",
+    "rationale": "유사도 0.91로 묶인 4건 중복 사례 — 정규 기사로 승격 권장",
+    "evidence": {
+      "members": [
+        "LSI-189",
+        "LSI-63",
+        "LSI-84",
+        "LSI-21"
+      ],
+      "size": 4,
+      "avg_similarity": 0.91,
+      "chips": [
+        "LPDDR5X-PHY"
+      ]
+    },
+    "action_hint": "POST /knowledge/known-issue (members 승격)",
+    "id": "S-52",
+    "state": "open",
+    "created_at": "2026-08-02T09:00:15",
+    "updated_at": "2026-08-02T09:00:15"
+  },
+  {
+    "type": "promote_known_issue",
+    "priority": "P2",
+    "target": "LSI-115",
+    "rationale": "유사도 0.937로 묶인 3건 중복 사례 — 정규 기사로 승격 권장",
+    "evidence": {
+      "members": [
+        "LSI-115",
+        "LSI-73",
+        "LSI-157"
+      ],
+      "size": 3,
+      "avg_similarity": 0.937,
+      "chips": [
+        "UFS4-Controller"
+      ]
+    },
+    "action_hint": "POST /knowledge/known-issue (members 승격)",
+    "id": "S-53",
+    "state": "open",
+    "created_at": "2026-08-02T09:00:15",
+    "updated_at": "2026-08-02T09:00:15"
   }
 ]
