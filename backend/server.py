@@ -949,6 +949,52 @@ def _agno_explain(prompt: str) -> "RcaExplanation | None":
     return out.content if isinstance(out.content, RcaExplanation) else None
 
 
+def mark_unsupported(md: str, dropped: list[str]) -> str:
+    """본문이 언급한 **미제공 사례 키**를 그 자리에서 표시한다.
+
+    왜 필요한가(실측 2026-08-04, 설명 30건 중 2건):
+      LSI-112 의 본문은 근거에 없는 LSI-70·LSI-133 을 인용한다. 모델 스스로
+      "본문에 직접 키가 명시되지 않았지만 LSI-7-rca 에 포함된 것으로 간주됩니다"
+      라고 적는다 — 즉 지어낸 것이다.
+
+    시스템은 이걸 이미 감지해 `dropped` 로 분리했다. 그런데 **본문은 그대로 두고**
+    화면에는 "매치 외 인용 제거됨" 이라고 적었다. 제거된 것이 없으므로 거짓이다.
+    사용자는 본문을 읽고 LSI-70 을 찾으러 간다.
+
+    LLM 으로 다시 쓰지 않는다 — 문서 전체를 LLM 에 맡겼다가 무관한 문장의 "펌웨어"가
+    "펌 - 만웨어"로 깨진 적이 있다. 여기서는 **정확히 그 키 토큰만** 결정적으로
+    치환한다(코드 블록·URL 안은 건드리지 않는다).
+    """
+    if not dropped:
+        return md
+    import re as _re
+    marked = md
+    for k in sorted(set(dropped), key=len, reverse=True):
+        if not _re.fullmatch(r"LSI-\d+(-\w+)?", str(k)):
+            continue                       # 예상 밖 형식이면 손대지 않는다
+        # 이미 표시된 것/코드 블록(`...`)/링크 대상은 제외
+        pat = _re.compile(rf"(?<![\w-]){_re.escape(k)}(?![\w-])(?!\(미제공\))")
+        out, last, buf = [], 0, marked
+        for seg, is_code in _split_code(buf):
+            out.append(seg if is_code else pat.sub(f"{k}(미제공)", seg))
+        marked = "".join(out)
+    return marked
+
+
+def _split_code(md: str):
+    """(구간, 코드여부) 로 쪼갠다 — 코드 블록·인라인 코드는 치환 대상에서 뺀다."""
+    import re as _re
+    parts, pos = [], 0
+    for m in _re.finditer(r"```.*?```|`[^`\n]*`", md, flags=_re.S):
+        if m.start() > pos:
+            parts.append((md[pos:m.start()], False))
+        parts.append((m.group(0), True))
+        pos = m.end()
+    if pos < len(md):
+        parts.append((md[pos:], False))
+    return parts
+
+
 def _compose_explanation(exp: "RcaExplanation", valid_keys: set[str]) -> tuple[str, list[str], list[str]]:
     """구조화 출력 → 표시용 마크다운 + 검증된 인용/탈락 인용. (인용 게이트가 구조적으로 해결됨)"""
     cited = [k for k in exp.cited_keys if k in valid_keys]
@@ -957,7 +1003,9 @@ def _compose_explanation(exp: "RcaExplanation", valid_keys: set[str]) -> tuple[s
     if (exp.workaround or "").strip():
         md += f"\n### ↪ 임시 우회책\n{exp.workaround}\n"
     md += f"\n_근거(검증됨): {', '.join(cited)}_" if cited else "\n_근거로 인용된 과거 사례 없음_"
-    return md, cited, dropped
+    # 본문이 언급한 미제공 키를 그 자리에 표시 — 목록만 따로 보여주면 본문을 읽는
+    # 사람에게는 닿지 않는다.
+    return mark_unsupported(md, dropped), cited, dropped
 
 
 def _llm_explain(query_rec: dict, matches: list[dict]) -> dict:
@@ -1237,7 +1285,8 @@ def _generate_explain_md(query_rec: dict, match_recs: list[dict]):
         if dropped:
             print(f"[explain] {query_rec.get('key','?')} 본문이 미제공 사례를 언급: {dropped}")
         _explain_md_store(query_rec, match_recs,
-                          {"markdown": full, "citations": cited, "dropped": dropped})
+                          {"markdown": mark_unsupported(full, dropped),
+                           "citations": cited, "dropped": dropped})
 
 
 @app.get("/recommend/explain/stream", dependencies=[Depends(require("reco.read"))])
@@ -1269,7 +1318,10 @@ def explain_stream(key: Optional[str] = None, summary: str = "", symptom: str = 
                 _record_metric("explain", {"total_ms": 0.0, "cached": True,
                                            "chars": len(hit.get("markdown", ""))})
                 # 캐시본도 델타로 흘려보낸다 — 프론트의 SSE 처리 경로를 하나로 유지.
-                md = hit.get("markdown", "")
+                # 표시는 읽을 때도 건다 — 이 기능 이전에 저장된 캐시본에는 표시가
+                # 없다. 재생성(89초 × 127건)을 요구하지 않고 소급 적용한다. 멱등이라
+                # 새로 생성된 본문에 두 번 붙지 않는다.
+                md = mark_unsupported(hit.get("markdown", ""), hit.get("dropped", []))
                 for i in range(0, len(md), 400):
                     yield f"data: {json.dumps({'type': 'delta', 'text': md[i:i + 400]}, ensure_ascii=False)}\n\n"
                 yield f"data: {json.dumps({'type': 'done', 'citations': hit.get('citations', []), 'dropped': hit.get('dropped', []), 'cached': True}, ensure_ascii=False)}\n\n"
@@ -1527,8 +1579,11 @@ def explain_cached(key: str, k: int = 4):
         return {"cached": False, "coverage": True,
                 "evidence_keys": [m["key"] for m in result["matches"]],
                 "reason": "저장된 분석이 없습니다 — analyze_issue 의 근거로 직접 분석하세요"}
-    return {"cached": True, "coverage": True, "markdown": hit.get("markdown", ""),
-            "citations": hit.get("citations", [])}
+    return {"cached": True, "coverage": True,
+            "markdown": mark_unsupported(hit.get("markdown", ""), hit.get("dropped", [])),
+            "citations": hit.get("citations", []),
+            # 근거 없이 언급된 키를 클라이언트(MCP 포함)도 알아야 한다
+            "unsupported_mentions": hit.get("dropped", [])}
 
 
 def _record_gap(query_rec: dict, result: dict, reason: str) -> None:

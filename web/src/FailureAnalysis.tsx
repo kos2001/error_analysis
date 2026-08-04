@@ -827,7 +827,14 @@ export default function FailureAnalysis({ onQueueChange, routeKey, onSelectKey, 
                           </div>
                         )}
                         {reco.explanation_dropped_citations && reco.explanation_dropped_citations.length > 0 && (
-                          <div className="mt-1.5 text-[11px] text-red-400">⚠ 매치 외 인용 제거됨: {reco.explanation_dropped_citations.join(", ")}</div>
+                          // "제거됨" 은 거짓이었다 — 본문은 그대로였고 아무것도 지워지지
+                          // 않았다. 사용자는 그 말을 믿고 본문의 사례 번호를 찾으러 간다.
+                          // 이제 본문에도 (미제공) 이 붙고, 여기서는 무엇을 믿지 말아야
+                          // 하는지만 알린다.
+                          <div className="mt-1.5 text-[11px] text-red-400">
+                            ⚠ 본문이 근거에 없는 사례를 언급했습니다: {reco.explanation_dropped_citations.join(", ")}
+                            {" "}— 본문에 <b>(미제공)</b> 으로 표시했습니다. 이 번호는 신뢰하지 마세요.
+                          </div>
                         )}
                         {sel && sel.status !== "완료" && !explaining && (
                           <div className="mt-3 border-t border-zinc-800 pt-3">
