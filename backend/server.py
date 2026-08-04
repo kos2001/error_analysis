@@ -1038,15 +1038,52 @@ def _llm_explain(query_rec: dict, matches: list[dict]) -> dict:
     return {**out, "cached": False}
 
 
-def _case_block(r: dict) -> str:
-    """근거 사례를 풍부하게 직렬화 — 증상/디버깅 접근/근본원인/해결책/우회책."""
+# 큐레이션 RCA 기사(`{원본}-rca`)의 본문에는 다른 사례 키가 박혀 있다 — 사람이 쓴
+# 종합 분석이라 "참고 사례: LSI-36, LSI-183, LSI-205" 같은 줄이 그대로 들어간다.
+# 실측(2026-08-05): 내용이 있는 -rca 4건 **전부** 그렇다.
+#
+# 이게 "인용 환각" 으로 보이던 것의 정체다. 모델이 지어낸 게 아니라 **프롬프트에
+# 보이는 키를 충실히 옮긴 것**이고, 검증기는 그 키가 근거 목록에 없으니 환각으로
+# 셌다. A/B 로 잡힌 4건이 예외 없이 여기 해당했다(근거 본문에 실제로 존재).
+#
+# 읽는 사람은 그 사례를 볼 수 없다 — 근거로 제시되지 않았기 때문이다. 그래서
+# 직렬화 단계에서 지운다. 모델을 탓하는 대신 입력을 고치는 쪽이 맞다.
+_EMBEDDED_KEY = _re_embedded = None
+
+
+def _strip_embedded_keys(text: str, keep: set[str]) -> str:
+    """근거 본문에 박힌 다른 사례 키를 지운다. `keep`(이번 근거 목록)은 남긴다."""
+    import re as _re
+    # "참고 사례: LSI-36, LSI-183, LSI-205" 같은 줄은 통째로 뺀다
+    text = _re.sub(r"참고 사례\s*:\s*[^\n]*\n?", "", text)
+    def sub(m):
+        k = m.group(0)
+        return k if k in keep else "(다른 사례)"
+    return _re.sub(r"LSI-\d+", sub, text)
+
+
+def _case_block(r: dict, keep: set[str] | None = None) -> str:
+    """근거 사례를 풍부하게 직렬화 — 증상/디버깅 접근/근본원인/해결책/우회책.
+
+    keep 이 주어지면 본문에 박힌 **다른** 사례 키를 지운다(위 주석 참조).
+    """
     parts = [f"[{r.get('key','')}] {r.get('summary','')}"]
     for label, field in (("증상", "symptom"), ("디버깅 접근", "debug_approach"),
                          ("근본원인", "root_cause"), ("해결책", "resolution"), ("우회책", "workaround")):
         v = (r.get(field) or "").strip()
         if v:
             parts.append(f"{label}: {v}")
-    return "\n".join(parts)
+    out = "\n".join(parts)
+    return _strip_embedded_keys(out, keep) if keep is not None else out
+
+
+def _example_key(match_recs: list[dict]) -> str:
+    """인용 형식 예시에 쓸 키 — 이번 근거에서 고른다(예시가 새는 것을 막는다)."""
+    for r in match_recs:
+        k = str(r.get("key", ""))
+        if k:
+            return k
+    return "LSI-000"
 
 
 def _allowed_keys_block(match_recs: list[dict]) -> str:
@@ -1077,7 +1114,12 @@ def _allowed_keys_block(match_recs: list[dict]) -> str:
 
 def _explain_prompt_md(query_rec: dict, match_recs: list[dict]) -> str:
     """스트리밍용 심화 분석 프롬프트 — 인과/사례종합/검증방법/재발방지/불확실성 + 인라인 인용."""
-    cases = "\n\n".join(_case_block(r) for r in match_recs)
+    # 이번 근거 목록에 있는 키만 남긴다 — 본문에 박힌 다른 사례 키는 읽는 사람이
+    # 볼 수 없으므로 프롬프트에서 지운다.
+    keep = {str(r.get("key", "")) for r in match_recs}
+    keep |= {re.match(r"(LSI-\d+)", k).group(1) for k in keep if re.match(r"(LSI-\d+)", k)}
+    keep.add(str(query_rec.get("key", "")))
+    cases = "\n\n".join(_case_block(r, keep) for r in match_recs)
     q = query_rec
     q_extra = f"\n진행 단서(조사/트리아지): {q.get('investigation','')}" if (q.get("investigation") or "").strip() else ""
     # 성능 개선 루프: 사람이 검토·수정한 과거 분석을 문체/수준 가이드(few-shot)로 주입
@@ -1110,7 +1152,11 @@ def _explain_prompt_md(query_rec: dict, match_recs: list[dict]) -> str:
         "### 🔬 근본원인 검증 방법  (어떤 신호·측정·재현 절차로 확인하는지 구체적으로)\n"
         "### 🧩 사례 종합 / 재발 방지  (인용 사례의 공통 패턴·차이점 + 예방 포인트)\n"
         "### ⚠ 불확실성·주의  (근거가 약하거나 사례와 다른 부분)\n"
-        "각 핵심 주장 옆에 근거 사례 키를 (LSI-49)처럼 인라인 인용하세요(제공된 키만, 창작 금지). 한자/CJK 한자 금지.\n"
+        # 형식 예시에 **진짜처럼 보이는 키**를 쓰면 모델이 그대로 베낀다 — 실측에서
+        # LSI-141 설명이 근거에 없는 LSI-49 를 인용했는데, 출처가 바로 이 예시였다.
+        # 이번 근거의 첫 키를 예시로 쓴다: 유효한 예시이면서 새는 키가 될 수 없다.
+        f"각 핵심 주장 옆에 근거 사례 키를 ({_example_key(match_recs)})처럼 인라인 "
+        "인용하세요(제공된 키만, 창작 금지). 한자/CJK 한자 금지.\n"
         "**근거 구분(중요)**: 제공된 사례에서 확인되는 내용과 일반 도메인 지식을 섞지 마세요.\n"
         " - 사례로 확인되는 주장 → 반드시 인라인 인용을 답니다.\n"
         " - 사례에 없지만 이해를 돕는 배경 설명(규격 정의·일반 동작 원리 등) → 문장 앞에 "
