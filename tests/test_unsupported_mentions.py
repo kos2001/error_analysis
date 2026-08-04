@@ -109,6 +109,43 @@ def test_cached_read_is_retroactive() -> None:
     check("원본은 그대로(저장본 불변)", "LSI-70(미제공)" not in old_cached["markdown"])
 
 
+def test_evidence_serialization_strips_foreign_keys() -> None:
+    """근거 본문에 박힌 **다른 사례 키**가 프롬프트로 새지 않는가.
+
+    이것이 "인용 환각" 의 진짜 정체였다. 큐레이션 RCA 기사(`{원본}-rca`)는 사람이 쓴
+    종합 분석이라 본문에 "참고 사례: LSI-36, LSI-183, LSI-205" 같은 줄이 들어간다
+    (실측: 내용 있는 -rca 4건 전부). 모델은 프롬프트에 보이는 키를 충실히 옮겼을
+    뿐인데 검증기가 환각으로 셌다.
+    """
+    print("\n[근거 본문의 외부 키 제거]")
+    keep = {"LSI-120", "LSI-120-rca", "LSI-36"}
+    rec = {"key": "LSI-120-rca", "summary": "종합 분석",
+           "root_cause": "VRR 전환 시 보정 지연.",
+           "resolution": "보간 적용.\n참고 사례: LSI-36, LSI-183, LSI-205\n",
+           "workaround": "LSI-36 과 동일. LSI-205 도 참고."}
+    block = server._case_block(rec, keep)
+    check("'참고 사례:' 줄이 사라진다", "참고 사례" not in block, block)
+    check("근거 밖 키가 남지 않는다", "LSI-205" not in block and "LSI-183" not in block, block)
+    check("근거 안 키는 보존", "LSI-36" in block, block)
+    check("지운 자리를 표시", "(다른 사례)" in block, block)
+
+    raw = server._case_block(rec)
+    check("keep 없이 부르면 원문 그대로(하위호환)", "LSI-205" in raw)
+
+
+def test_example_key_does_not_leak() -> None:
+    """인용 형식 예시가 근거 밖 키를 흘리지 않는가.
+
+    예전 프롬프트는 "(LSI-49)처럼 인라인 인용하세요" 였다. 진짜처럼 보이는 키를
+    예시로 두니 모델이 그대로 베꼈다 — LSI-141 설명의 LSI-49 가 여기서 나왔다.
+    """
+    print("\n[형식 예시 키]")
+    recs = [{"key": "LSI-77"}, {"key": "LSI-88"}]
+    check("근거의 첫 키를 예시로", server._example_key(recs) == "LSI-77",
+          server._example_key(recs))
+    check("근거가 없으면 자리표시자", server._example_key([]) == "LSI-000")
+
+
 if __name__ == "__main__":
     test_marks_prose_only()
     test_no_false_positives()
@@ -116,6 +153,8 @@ if __name__ == "__main__":
     test_multiple_keys()
     test_compose_applies_marking()
     test_cached_read_is_retroactive()
+    test_evidence_serialization_strips_foreign_keys()
+    test_example_key_does_not_leak()
     print("\n" + "=" * 56)
     if FAILS:
         print(f"실패 {len(FAILS)}건: " + " / ".join(FAILS))
