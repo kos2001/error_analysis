@@ -1558,6 +1558,113 @@ def explain_cache_clear():
     return {"ok": True, "removed": llm_cache.clear()}
 
 
+class InvestigateBody(BaseModel):
+    key: Optional[str] = None
+    summary: str = ""
+    symptom: str = ""
+    chip: str = ""
+    category: str = ""
+    k: int = 5
+
+
+@app.post("/recommend/investigate", dependencies=[Depends(require("reco.read"))])
+def investigate(req: InvestigateBody):
+    """유사 사례가 없을 때의 **조사 계획** — coverage=false 전용.
+
+    게이트는 무관 사례에 기댄 환각을 막으려고 있다. 그래서 사례가 없으면 제품이
+    아무것도 하지 않았다 — 정직하지만 가장 어려운 이슈에서 도움이 0 이다.
+
+    여기서 근본원인을 만들면 게이트를 무력화하는 것이므로, **산출물을 바꾼다**:
+    결론이 아니라 "무엇을 재면 어떤 가설이 죽는지" 를 쓴다. 생성 후 결정적으로
+    검증하고(절 완결·미제시 사례 언급·단정문·가설 표시) 하나라도 어기면 **내보내지
+    않는다** — 검증 없이 여는 것은 게이트를 없앤 것과 같다.
+    """
+    import first_principles as fp
+
+    st = _reco_state()
+    if req.key:
+        query_rec = st["by_key"].get(req.key)
+        if not query_rec:
+            raise HTTPException(status_code=404, detail=f"이슈 {req.key} 없음")
+    else:
+        if not (req.summary or req.symptom):
+            raise HTTPException(status_code=400, detail="key 또는 summary/symptom 필요")
+        query_rec = {"summary": req.summary, "symptom": req.symptom,
+                     "chip": req.chip, "category": req.category, "labels": []}
+
+    result = _recommend_cached(query_rec, k=max(req.k, 4),
+                               exclude_key=req.key or None)
+    gate = result.get("gate") or {}
+
+    # 게이트를 통과했다면 이 기능은 필요 없다 — 근거 있는 분석(explain)을 쓰라고 알린다.
+    if result.get("coverage"):
+        return {"available": False, "reason": "coverage_passed",
+                "message": "유사 사례가 있습니다 — 근거 기반 심층 분석(explain)을 사용하세요.",
+                "gate": gate}
+    # 판정 불가(장애)는 대상이 아니다. 사례가 없는 게 아니라 판정을 못 한 것이라,
+    # 여기서 조사 계획을 만들면 있는 사례를 놓친 채 처음부터 파게 만든다.
+    if gate.get("signal") == "none":
+        return {"available": False, "reason": "undecidable",
+                "message": "재순위·임베딩을 쓸 수 없어 관련도를 판정하지 못했습니다 — "
+                           "일시 장애입니다. 잠시 후 다시 시도하세요.",
+                "gate": gate}
+
+    bundle = fp.gather(query_rec, st["reco"], result.get("matches", []), k_weak=req.k)
+    prompt = fp.build_prompt(bundle, gate)
+
+    cached = llm_cache.get(_investigate_ckey(query_rec, bundle))
+    if cached:
+        return {"available": True, "cached": True, "gate": gate,
+                "markdown": cached.get("markdown", ""),
+                "validation": cached.get("validation", {}), "bundle": _slim_bundle(bundle)}
+
+    md = "".join(_llm_stream(prompt))
+    fixed = validate_and_fix(md)
+    if fixed.rewritten:
+        md = fixed.rewritten
+    v = fp.validate(md, bundle)
+    ok, why = fp.is_acceptable(v)
+    if not ok:
+        # 내보내지 않는다. 왜 막았는지는 알려준다 — 조용히 비우면 장애와 구분이 안 된다.
+        return {"available": False, "reason": "validation_failed", "message": why,
+                "validation": v, "gate": gate}
+
+    llm_cache.put(_investigate_ckey(query_rec, bundle),
+                  {"markdown": md, "validation": v})
+    return {"available": True, "cached": False, "gate": gate, "markdown": md,
+            "validation": v, "bundle": _slim_bundle(bundle)}
+
+
+def _investigate_ckey(query_rec: dict, bundle: dict) -> str:
+    """질의 + 번들 내용 기반 캐시 키 — 번들이 바뀌면(KB 변경) 다시 만든다.
+
+    explain 캐시와 같은 규약을 쓰되 kind 로 갈라 둔다. extra 에 번들 요약을 넣어,
+    약한 매치나 분류 고장모드가 달라지면 새로 만든다(같은 질의라도 KB 가 바뀌면
+    조사 계획의 재료가 달라진다).
+    """
+    import first_principles as fp
+    extra = json.dumps({"keys": sorted(fp.allowed_keys(bundle)),
+                        "modes": [m["template"] for m in bundle.get("category_modes", [])]},
+                       ensure_ascii=False, sort_keys=True)
+    model = os.getenv("RVP_MODEL") or os.getenv("OPENROUTER_MODEL", "")
+    return llm_cache.make_key("investigate", query_rec, bundle.get("weak_matches", []),
+                              model, extra=extra)
+
+
+def _slim_bundle(bundle: dict) -> dict:
+    """화면·MCP 로 보낼 요약 — 본문 전체를 되돌려줄 필요는 없다."""
+    return {
+        "weak_matches": [{"key": m["key"], "summary": m["summary"][:100],
+                          "score": m.get("rerank_score") or m.get("embed_cos"),
+                          "entity_overlap": m.get("entity_overlap", 0)}
+                         for m in bundle.get("weak_matches", [])],
+        "chip_history": [{"key": h["key"], "template": h["template"][:80],
+                          "category": h["category"]} for h in bundle.get("chip_history", [])],
+        "category_modes": bundle.get("category_modes", []),
+        "query_entities": bundle.get("query_entities", []),
+    }
+
+
 @app.get("/recommend/explain/cached", dependencies=[Depends(require("reco.read"))])
 def explain_cached(key: str, k: int = 4):
     """이미 만들어 둔 심층 분석만 돌려준다 — **생성하지 않는다**.

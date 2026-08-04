@@ -164,6 +164,10 @@ export default function FailureAnalysis({ onQueueChange, routeKey, onSelectKey, 
   const [graph, setGraph] = useState<GraphData | null>(null);
   const [graphErr, setGraphErr] = useState("");
   const [graphLoading, setGraphLoading] = useState(false);
+  // 사례가 없을 때의 조사 계획 — 근거 기반 분석과 **다른 산출물**이라 상태를 따로 둔다.
+  const [invMd, setInvMd] = useState("");
+  const [invBusy, setInvBusy] = useState(false);
+  const [invErr, setInvErr] = useState("");
   // 사이드바 너비 조정 + 접기
   const [leftW, setLeftW] = useState(320);
   const [rightW, setRightW] = useState(340);
@@ -281,6 +285,7 @@ export default function FailureAnalysis({ onQueueChange, routeKey, onSelectKey, 
     activeKey.current = key;
     setExplaining(true);
     setReco((prev) => (prev ? { ...prev, explanation: "", explanation_citations: [], explanation_dropped_citations: [], explanation_cached: undefined } : prev));
+    setInvMd(""); setInvErr(""); setInvBusy(false);
     // withCredentials: SSE 도 쿠키 세션을 실어야 한다(전역 fetch 래퍼가 못 덮는 경로).
     const es = new EventSource(
       `${API}/recommend/explain/stream?key=${encodeURIComponent(key)}&k=4${refresh ? "&refresh=true" : ""}`,
@@ -469,6 +474,23 @@ export default function FailureAnalysis({ onQueueChange, routeKey, onSelectKey, 
     activeRowRef.current?.scrollIntoView({ block: "nearest" });
     setFollowFocus(false);
   }, [sel?.key, followFocus]);
+
+  const runInvestigate = async () => {
+    if (!sel) return;
+    setInvBusy(true); setInvErr(""); setInvMd("");
+    try {
+      const r = await fetch(`${API}/recommend/investigate`, {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ key: sel.key, k: 5 }),
+      });
+      const d = await r.json();
+      if (d.available) setInvMd(d.markdown || "");
+      // 검증에 걸려 막힌 경우도 조용히 비우지 않는다 — 장애와 구분이 안 된다.
+      else setInvErr(d.message || "조사 계획을 만들지 못했습니다.");
+    } catch (e: any) {
+      setInvErr(e?.message || "요청 실패");
+    } finally { setInvBusy(false); }
+  };
 
   const listKeyDown = (e: React.KeyboardEvent) => {
     if (e.key !== "ArrowDown" && e.key !== "ArrowUp") return;
@@ -729,6 +751,30 @@ export default function FailureAnalysis({ onQueueChange, routeKey, onSelectKey, 
                       </>
                     )}
                     {reco.gate && <GateDetail gate={reco.gate} />}
+                    {/* 사례가 없을 때만 뜨는 조사 계획. 근본원인을 만들지 않고
+                        "무엇을 재면 어떤 가설이 죽는지" 를 쓴다 — 게이트를 우회하는
+                        것이 아니라 산출물을 바꾸는 것이다. 장애(signal="none")일 때는
+                        띄우지 않는다(사례가 없는 게 아니라 판정을 못 한 상황). */}
+                    {reco.gate?.signal !== "none" && !invMd && (
+                      <button onClick={runInvestigate} disabled={invBusy}
+                        className="mt-3 inline-flex items-center rounded-lg border border-amber-600/60
+                                   bg-amber-500/10 px-3 py-1.5 text-xs font-medium text-amber-300
+                                   transition hover:bg-amber-500/20 disabled:opacity-40">
+                        {invBusy ? "조사 계획 작성 중… (1~2분)" : "🧭 1차 원리 조사 계획 만들기"}
+                      </button>
+                    )}
+                    {invErr && <div className="mt-2 text-[11px] text-red-400">⚠ {invErr}</div>}
+                    {invMd && (
+                      <div className="mt-3 rounded-lg border border-zinc-800 bg-zinc-950/60 p-4">
+                        <div className="mb-2 text-[11px] text-amber-400">
+                          🧭 <b>조사 계획</b> — 과거 사례에 근거하지 않습니다. 근본원인이 아니라
+                          <b> 무엇을 확인해야 하는지</b>를 제시합니다. (참고)·(배경)·(추정) 표시를 확인하세요.
+                        </div>
+                        <div className="prose prose-invert prose-sm max-w-none">
+                          <ReactMarkdown remarkPlugins={[remarkGfm]}>{invMd}</ReactMarkdown>
+                        </div>
+                      </div>
+                    )}
                     <div className="mt-3 border-t border-amber-900/60 pt-2 text-[11px] text-amber-300/80">
                       {reco.gate?.signal === "none"
                         ? "일시 장애로 판정하지 못한 질의라 지식 공백으로 세지 않습니다 — 서비스가 돌아오면 다시 눌러 주세요."
