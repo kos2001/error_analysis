@@ -1049,6 +1049,32 @@ def _case_block(r: dict) -> str:
     return "\n".join(parts)
 
 
+def _allowed_keys_block(match_recs: list[dict]) -> str:
+    """본문에서 쓸 수 있는 사례 키를 **닫힌 목록으로** 못 박는다.
+
+    기존 규칙은 "제공된 키만, 창작 금지" 였는데, 허용 키를 나열하지 않아 모델이
+    사례 블록에서 유추해야 했다. 실측(2026-08-04, 설명 30건)에서 근거에 `-rca` 키가
+    섞인 6건 중 2건이 본문에 없는 사례를 인용했다 — LSI-112 는 "LSI-70과 LSI-133은
+    LSI-7-rca에 포함된 것으로 간주됩니다" 라고 **스스로 지어냈다**. 종합 RCA 문서가
+    다른 사례를 품고 있다고 추측한 것이다.
+    같은 질의·같은 근거로 만든 캐시 두 건 중 하나만 환각이 있었다 — 확률적이라
+    규칙을 더 좁게 주는 것이 맞다.
+
+    **기본 꺼짐.** 효과가 아직 측정되지 않았다 — A/B(`scripts/ab_citation_keylist.py`)
+    가 끝나기 전에 켜면 "고쳤다" 는 근거 없는 주장이 된다. 측정 후 기본값을 정한다.
+    RVP_EXPLAIN_KEYLIST=1 로 켠다.
+    """
+    if os.getenv("RVP_EXPLAIN_KEYLIST", "0") != "1":
+        return ""
+    keys = [str(r.get("key", "")) for r in match_recs if r.get("key")]
+    if not keys:
+        return ""
+    return ("\n\n## 사용 가능한 사례 키(닫힌 목록)\n"
+            + ", ".join(keys)
+            + "\n이 목록에 없는 LSI-번호는 **본문 어디에도** 쓰지 마세요. "
+              "위 사례가 다른 사례를 '포함한다'고 추측하지 마세요 — 목록이 전부입니다.\n")
+
+
 def _explain_prompt_md(query_rec: dict, match_recs: list[dict]) -> str:
     """스트리밍용 심화 분석 프롬프트 — 인과/사례종합/검증방법/재발방지/불확실성 + 인라인 인용."""
     cases = "\n\n".join(_case_block(r) for r in match_recs)
@@ -1094,7 +1120,8 @@ def _explain_prompt_md(query_rec: dict, match_recs: list[dict]) -> str:
         "구분할 수 있어야 합니다 — 그 구분이 안 되면 분석을 신뢰할 수 없습니다.\n\n"
         f"## 미해결 이슈\n{q.get('summary','')}\n증상: {q.get('symptom','')}\n"
         f"칩: {q.get('chip','')} / 분류: {q.get('category','')}{q_extra}\n\n"
-        f"## 과거 해결 사례\n{cases}\n{fewshot}{negatives}")
+        f"## 과거 해결 사례\n{cases}\n{fewshot}{negatives}"
+        + _allowed_keys_block(match_recs))
 
 
 def _llm_stream(prompt: str, reasoning: bool = False):
